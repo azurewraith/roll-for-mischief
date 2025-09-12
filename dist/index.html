@@ -355,7 +355,7 @@ const E = {
     this.ctx.strokeStyle = 'rgba(100,100,150,0.3)';
     this.ctx.lineWidth = 1;
     
-    const gridRange = 200; // Expand to cover entire play area
+    const gridRange = 500; // Expand to cover entire play area
     for (let x = -gridRange; x <= gridRange; x += this.gridSize) {
       for (let z = -gridRange; z <= gridRange; z += this.gridSize) {
         // Draw each grid square
@@ -645,9 +645,11 @@ const E = {
       }
     }
     
-    // Draw black square eyes for defeated cats
+    // Draw special eyes
     if (isDefeated && clipToHead) {
       this.drawDefeatedEyes(x, y, size, spriteSize);
+    } else if (isBoss) {
+      this.drawBossEyes(x, y, size, spriteSize);
     }
   },
   
@@ -706,6 +708,25 @@ const E = {
     this.ctx.fillRect(leftEyeX, eyeY, eyeWidth, eyeHeight);
     
     // Draw black rectangle for right eye  
+    this.ctx.fillRect(rightEyeX, eyeY, eyeWidth, eyeHeight);
+  },
+  
+  // Draw yellow eyes for boss cat
+  drawBossEyes(x, y, size, spriteSize) {
+    const pixelSize = size / spriteSize;
+    this.ctx.fillStyle = '#ffff00';
+    
+    // Eye positions (same as defeated eyes)
+    const leftEyeX = x + 14 * pixelSize;
+    const rightEyeX = x + 22 * pixelSize;
+    const eyeY = y + 10 * pixelSize;
+    const eyeWidth = pixelSize * 4;
+    const eyeHeight = pixelSize * 3;
+    
+    // Draw yellow rectangle for left eye
+    this.ctx.fillRect(leftEyeX, eyeY, eyeWidth, eyeHeight);
+    
+    // Draw yellow rectangle for right eye  
     this.ctx.fillRect(rightEyeX, eyeY, eyeWidth, eyeHeight);
   },
   
@@ -942,6 +963,7 @@ let G = {
   attackCount: 0,
   moveDistance: 0, // Track movement used this turn
   eventLog: [],
+  targetDialog: null, // Target selection state
   
   // Initialize
   init() {
@@ -1076,6 +1098,12 @@ let G = {
       if (e.code === 'KeyM') this.setAction('move');
       if (e.code === 'KeyX') this.setAction('attack');
       if (e.code === 'Escape') this.endAction();
+      
+      // Number keys for target selection
+      if (this.targetDialog && e.code.startsWith('Digit')) {
+        const num = parseInt(e.code.slice(5));
+        if (num >= 1 && num <= 9) this.selectTarget(num);
+      }
     });
     document.addEventListener('keyup', e => this.k.delete(e.code));
     
@@ -1432,6 +1460,29 @@ let G = {
     if (currentLine) lines.push(currentLine);
     return lines;
   },
+  
+  // Show target selection dialog
+  showTargetDialog(targets, actionType) {
+    this.targetDialog = { targets, actionType };
+    this.addEvent(`Choose target (1-${targets.length}):`);
+    targets.forEach((t, i) => {
+      this.addEvent(`${i + 1}) ${t.c.n} Cat`);
+    });
+  },
+  
+  // Handle target selection input
+  selectTarget(number) {
+    if (!this.targetDialog) return;
+    
+    const index = number - 1;
+    if (index >= 0 && index < this.targetDialog.targets.length) {
+      const target = this.targetDialog.targets[index];
+      if (this.targetDialog.actionType === 'attack') {
+        this.executeAttack(target);
+      }
+      this.targetDialog = null;
+    }
+  },
 
   // Set current action type
   setAction(type) {
@@ -1464,44 +1515,75 @@ let G = {
   // Attempt attack on nearby enemies
   attemptAttack() {
     const enemies = this.cs.filter(cat => {
-      const dx = cat.pos.x - this.p.pos.x;
-      const dz = cat.pos.z - this.p.pos.z;
-      const dist = Math.sqrt(dx*dx + dz*dz);
-      return dist <= 5 && cat.v; // Adjacent square
+      if (!cat.v) return false;
+      
+      if (cat.isBoss) {
+        // Boss cat occupies 2x2 grid - check adjacency to any square
+        const bossLeft = cat.pos.x - 5;
+        const bossRight = cat.pos.x + 5;
+        const bossTop = cat.pos.z - 5;
+        const bossBottom = cat.pos.z + 5;
+        
+        // Check if player is adjacent to any edge of the boss area
+        const adjacentX = (this.p.pos.x === bossLeft - 5) || (this.p.pos.x === bossRight + 5);
+        const adjacentZ = (this.p.pos.z === bossTop - 5) || (this.p.pos.z === bossBottom + 5);
+        const overlapX = this.p.pos.x >= bossLeft - 5 && this.p.pos.x <= bossRight + 5;
+        const overlapZ = this.p.pos.z >= bossTop - 5 && this.p.pos.z <= bossBottom + 5;
+        
+        return (adjacentX && overlapZ) || (adjacentZ && overlapX);
+      } else {
+        // Regular cat - simple distance check
+        const dx = cat.pos.x - this.p.pos.x;
+        const dz = cat.pos.z - this.p.pos.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        return dist <= 5;
+      }
     });
     
-    if (enemies.length > 0) {
-      const target = enemies[0]; // Attack first enemy
-      const map = this.attackCount * -5; // Multiple Attack Penalty
-      const result = P.k(this.p, target, map);
-      
-      this.currentActions--;
-      this.attackCount++;
-      
-      const mapText = map < 0 ? ` (MAP ${map})` : '';
-      const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
-      const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
-      
-      if (result.h) {
-        const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
-        const dmgText = `1d6${strText} [${result.d}]`;
-        this.addEvent(`Claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
-        if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
-      } else {
-        this.addEvent(`Claw attack${mapText}: ${rollText} MISS`);
-      }
-      
-      // Check if combat should end
-      const alive = this.turnOrder.filter(cat => cat.v);
-      if (alive.length <= 1) {
-        this.endCombat();
-        return;
-      }
-      
-      if (this.currentActions <= 0) this.actionType = null;
-    } else {
-      console.log('No enemies in range to attack!');
+    if (enemies.length === 0) {
+      this.addEvent('No enemies in range for attack');
+      return;
     }
+    
+    if (enemies.length === 1) {
+      // Auto-attack single target
+      const target = enemies[0];
+      this.executeAttack(target);
+    } else {
+      // Multiple targets - show numbered selection
+      this.showTargetDialog(enemies, 'attack');
+    }
+  },
+  
+  // Execute attack on specific target
+  executeAttack(target) {
+    const map = this.attackCount * -5; // Multiple Attack Penalty
+    const result = P.k(this.p, target, map);
+    
+    this.currentActions--;
+    this.attackCount++;
+    
+    const mapText = map < 0 ? ` (MAP ${map})` : '';
+    const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
+    const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
+    
+    if (result.h) {
+      const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
+      const dmgText = `1d6${strText} [${result.d}]`;
+      this.addEvent(`Claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
+      if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+    } else {
+      this.addEvent(`Claw attack${mapText}: ${rollText} MISS`);
+    }
+    
+    // Check if combat should end
+    const alive = this.turnOrder.filter(cat => cat.v);
+    if (alive.length <= 1) {
+      this.endCombat();
+      return;
+    }
+    
+    if (this.currentActions <= 0) this.actionType = null;
   },
   
   // Next combat turn
@@ -1610,32 +1692,32 @@ let G = {
         const directions = [];
         
         if (Math.abs(dx) > Math.abs(dz)) {
-          // Prefer X movement, fallback to Z
+          // Prefer X movement, fallback to Z (in grid squares)
           directions.push(
-            { x: dx > 0 ? 25 : -25, z: 0 },
-            { x: dx > 0 ? 20 : -20, z: 0 },
-            { x: dx > 0 ? 15 : -15, z: 0 },
-            { x: dx > 0 ? 10 : -10, z: 0 },
-            { x: dx > 0 ? 5 : -5, z: 0 },
-            { x: 0, z: dz > 0 ? 25 : -25 },
-            { x: 0, z: dz > 0 ? 20 : -20 },
-            { x: 0, z: dz > 0 ? 15 : -15 },
-            { x: 0, z: dz > 0 ? 10 : -10 },
-            { x: 0, z: dz > 0 ? 5 : -5 }
+            { x: dx > 0 ? 5 : -5, z: 0 }, // 25ft = 5 grid squares
+            { x: dx > 0 ? 4 : -4, z: 0 }, // 20ft = 4 grid squares
+            { x: dx > 0 ? 3 : -3, z: 0 }, // 15ft = 3 grid squares  
+            { x: dx > 0 ? 2 : -2, z: 0 }, // 10ft = 2 grid squares
+            { x: dx > 0 ? 1 : -1, z: 0 }, // 5ft = 1 grid square
+            { x: 0, z: dz > 0 ? 5 : -5 },
+            { x: 0, z: dz > 0 ? 4 : -4 },
+            { x: 0, z: dz > 0 ? 3 : -3 },
+            { x: 0, z: dz > 0 ? 2 : -2 },
+            { x: 0, z: dz > 0 ? 1 : -1 }
           );
         } else {
-          // Prefer Z movement, fallback to X
+          // Prefer Z movement, fallback to X (in grid squares)
           directions.push(
-            { x: 0, z: dz > 0 ? 25 : -25 },
-            { x: 0, z: dz > 0 ? 20 : -20 },
-            { x: 0, z: dz > 0 ? 15 : -15 },
-            { x: 0, z: dz > 0 ? 10 : -10 },
-            { x: 0, z: dz > 0 ? 5 : -5 },
-            { x: dx > 0 ? 25 : -25, z: 0 },
-            { x: dx > 0 ? 20 : -20, z: 0 },
-            { x: dx > 0 ? 15 : -15, z: 0 },
-            { x: dx > 0 ? 10 : -10, z: 0 },
-            { x: dx > 0 ? 5 : -5, z: 0 }
+            { x: 0, z: dz > 0 ? 5 : -5 }, // 25ft = 5 grid squares
+            { x: 0, z: dz > 0 ? 4 : -4 }, // 20ft = 4 grid squares
+            { x: 0, z: dz > 0 ? 3 : -3 }, // 15ft = 3 grid squares
+            { x: 0, z: dz > 0 ? 2 : -2 }, // 10ft = 2 grid squares
+            { x: 0, z: dz > 0 ? 1 : -1 }, // 5ft = 1 grid square
+            { x: dx > 0 ? 5 : -5, z: 0 },
+            { x: dx > 0 ? 4 : -4, z: 0 },
+            { x: dx > 0 ? 3 : -3, z: 0 },
+            { x: dx > 0 ? 2 : -2, z: 0 },
+            { x: dx > 0 ? 1 : -1, z: 0 }
           );
         }
         
@@ -1647,7 +1729,7 @@ let G = {
           if (!this.occupied(newX, newZ, currentCat)) {
             currentCat.pos.x = newX;
             currentCat.pos.z = newZ;
-            moveDistance = Math.abs(dir.x) + Math.abs(dir.z);
+            moveDistance = (Math.abs(dir.x) + Math.abs(dir.z)) * 5; // Convert to feet
             moved = true;
             break;
           }
@@ -1731,19 +1813,42 @@ let G = {
       return;
     }
     
-    // Get screen position from global map
-    const screenTop = E.catScreenPositions[activeCat.id];
-    if (!screenTop) {
-      console.log(`Arrow: No screen position stored for ${activeCat.id}`);
-      console.log('Available positions:', Object.keys(E.catScreenPositions));
+    // Calculate fresh screen position from world coordinates
+    const gridX = activeCat.pos.x * 5; // 5ft per grid square
+    const gridZ = activeCat.pos.z * 5;
+    const centerX = gridX + 2.5; // Center of grid square
+    const centerZ = gridZ + 2.5;
+    
+    const screenPos = E.project(centerX, 0, centerZ); // Ground level
+    if (!screenPos) {
+      console.log('Arrow: Cat position not projectable');
       return;
     }
     
     const ctx = E.ctx;
     
-    // Position arrow above the actual rendered sprite
-    const arrowX = screenTop.x;
-    const arrowY = screenTop.y - 20; // 20px above sprite top
+    // Calculate sprite size (same as sprite rendering)
+    const worldSize = 5;
+    const distanceFromCamera = screenPos.z;
+    const spriteSize = Math.max(8, worldSize * 800 / distanceFromCamera);
+    
+    // Apply same adjustments as sprite rendering
+    let spriteTop = screenPos.y - spriteSize;
+    
+    // Check if this is the boss cat
+    const isBoss = activeCat.c && activeCat.c.n === '??????';
+    if (isBoss) {
+      spriteTop += 10; // Same as boss sprite adjustment
+    }
+    
+    // Check if defeated
+    if (!activeCat.v) {
+      spriteTop += spriteSize * 0.4; // Same as defeated sprite adjustment  
+    }
+    
+    // Position arrow at middle of sprite
+    const arrowX = screenPos.x;
+    const arrowY = spriteTop + spriteSize * 0.5; // Middle of sprite
     
     // Draw arrow pointing down
     ctx.fillStyle = '#ffff00';
@@ -1784,8 +1889,8 @@ let G = {
     // Combat UI - horizontal initiative bar like screenshot
     if (this.combat) {
       // Initiative tracker - horizontal bar in top center
-      const boxWidth = 80;
-      const boxHeight = 55; // Increased height
+      const boxWidth = 120;
+      const boxHeight = 60; // Increased height for bigger cats
       const startX = (E.w - (this.turnOrder.length * boxWidth)) / 2;
       const startY = 10;
       
@@ -1802,21 +1907,74 @@ let G = {
         ctx.lineWidth = 2;
         ctx.strokeRect(x, startY, boxWidth - 2, boxHeight);
         
-        // Text - use cat's color only for class name
+        // Cat head sprite (using same clip as skull effect) - bigger now
+        if (SPRITES && SPRITES.cat) {
+          const headSize = 30; // Bigger size for initiative tracker
+          const headX = x + 5;
+          const headY = startY + 5;
+          
+          // Calculate 75% height clip (same as skull effect)
+          const spriteSize = SPRITES.cat.size;
+          const clipHeight = Math.floor(spriteSize * 0.75);
+          
+          // Render clipped sprite
+          for (let sy = 0; sy < clipHeight; sy++) {
+            for (let sx = 0; sx < spriteSize; sx++) {
+              const index = sy * spriteSize + sx;
+              const char = SPRITES.cat.data[index];
+              
+              if (char && char !== '0' && SPRITES.cat.colors[char]) {
+                let color = SPRITES.cat.colors[char];
+                
+                // Apply cat's color tinting
+                if (cat.color !== '#f07010') {
+                  const catR = parseInt(cat.color.slice(1, 3), 16);
+                  const catG = parseInt(cat.color.slice(3, 5), 16);
+                  const catB = parseInt(cat.color.slice(5, 7), 16);
+                  const origR = parseInt(color.slice(1, 3), 16);
+                  const origG = parseInt(color.slice(3, 5), 16);
+                  const origB = parseInt(color.slice(5, 7), 16);
+                  
+                  const tintedR = Math.min(255, Math.floor((origR * catR) / 255));
+                  const tintedG = Math.min(255, Math.floor((origG * catG) / 255));
+                  const tintedB = Math.min(255, Math.floor((origB * catB) / 255));
+                  
+                  color = `#${tintedR.toString(16).padStart(2,'0')}${tintedG.toString(16).padStart(2,'0')}${tintedB.toString(16).padStart(2,'0')}`;
+                }
+                
+                ctx.fillStyle = color;
+                const pixelX = headX + Math.floor(sx * headSize / spriteSize);
+                const pixelY = headY + Math.floor(sy * headSize / spriteSize);
+                const pixelSize = Math.max(1, Math.floor(headSize / spriteSize));
+                ctx.fillRect(pixelX, pixelY, pixelSize, pixelSize);
+              }
+            }
+          }
+        }
+        
+        // Text - use black text for readability on yellow highlight
         ctx.font = '10px monospace';
-        ctx.fillStyle = active ? '#ffff00' : (cat.color === '#000000' ? '#ffffff' : cat.color); // White for black cats, yellow for active
-        ctx.fillText(cat.c.n, x + 5, startY + 15);
+        ctx.fillStyle = active ? '#000000' : (cat.color === '#000000' ? '#ffffff' : cat.color); // Black for active, cat color otherwise
+        ctx.fillText(cat.c.n, x + 40, startY + 15); // Moved further right for bigger sprite
         
-        // Regular white text for other info
-        ctx.fillStyle = active ? '#ffff00' : '#ffffff'; // Yellow for active cat
+        // Regular text color
+        ctx.fillStyle = active ? '#000000' : '#ffffff'; // Black for active cat, white otherwise
         
-        // Only show HP for the player's own cat
+        // Show HP for player's cat, health status for others
         if (cat === this.p) {
-          ctx.fillText(`HP: ${cat.h}/${cat.m}`, x + 5, startY + 28);
-          ctx.fillText(`Init: ${cat.i}`, x + 5, startY + 41);
+          ctx.fillText(`HP: ${cat.h}/${cat.m}`, x + 40, startY + 28); // Second line
+          ctx.fillText(`Init: ${cat.i}`, x + 40, startY + 45); // Third line
         } else {
-          // Just show initiative for other players
-          ctx.fillText(`Init: ${cat.i}`, x + 5, startY + 28);
+          // Show health status for other cats
+          const hpPercent = cat.h / cat.m;
+          let healthStatus = 'Healthy';
+          if (hpPercent <= 0) healthStatus = 'Defeated';
+          else if (hpPercent <= 0.25) healthStatus = 'Critical';
+          else if (hpPercent <= 0.5) healthStatus = 'Bloodied';
+          else if (hpPercent <= 0.75) healthStatus = 'Injured';
+          
+          ctx.fillText(healthStatus, x + 40, startY + 28); // Second line  
+          ctx.fillText(`Init: ${cat.i}`, x + 40, startY + 45); // Third line
         }
       });
       

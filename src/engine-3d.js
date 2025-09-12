@@ -166,7 +166,7 @@ const E = {
     this.ctx.strokeStyle = 'rgba(100,100,150,0.3)';
     this.ctx.lineWidth = 1;
     
-    const gridRange = 200; // Expand to cover entire play area
+    const gridRange = 500; // Expand to cover entire play area
     for (let x = -gridRange; x <= gridRange; x += this.gridSize) {
       for (let z = -gridRange; z <= gridRange; z += this.gridSize) {
         // Draw each grid square
@@ -456,9 +456,11 @@ const E = {
       }
     }
     
-    // Draw black square eyes for defeated cats
+    // Draw special eyes
     if (isDefeated && clipToHead) {
       this.drawDefeatedEyes(x, y, size, spriteSize);
+    } else if (isBoss) {
+      this.drawBossEyes(x, y, size, spriteSize);
     }
   },
   
@@ -517,6 +519,25 @@ const E = {
     this.ctx.fillRect(leftEyeX, eyeY, eyeWidth, eyeHeight);
     
     // Draw black rectangle for right eye  
+    this.ctx.fillRect(rightEyeX, eyeY, eyeWidth, eyeHeight);
+  },
+  
+  // Draw yellow eyes for boss cat
+  drawBossEyes(x, y, size, spriteSize) {
+    const pixelSize = size / spriteSize;
+    this.ctx.fillStyle = '#ffff00';
+    
+    // Eye positions (same as defeated eyes)
+    const leftEyeX = x + 14 * pixelSize;
+    const rightEyeX = x + 22 * pixelSize;
+    const eyeY = y + 10 * pixelSize;
+    const eyeWidth = pixelSize * 4;
+    const eyeHeight = pixelSize * 3;
+    
+    // Draw yellow rectangle for left eye
+    this.ctx.fillRect(leftEyeX, eyeY, eyeWidth, eyeHeight);
+    
+    // Draw yellow rectangle for right eye  
     this.ctx.fillRect(rightEyeX, eyeY, eyeWidth, eyeHeight);
   },
   
