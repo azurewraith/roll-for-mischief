@@ -1,0 +1,1886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roll for Mischief - Cat Battle Royale</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: #1a1a1a; 
+            color: #fff; 
+            font-family: monospace; 
+            overflow: hidden;
+        }
+        canvas { 
+            display: block; 
+            width: 100vw; 
+            height: 100vh; 
+            background: #222;
+        }
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 100;
+        }
+        .dialog-box {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: #000;
+            border: 3px solid #666;
+            border-radius: 8px;
+            padding: 15px;
+            font-size: 14px;
+            line-height: 1.4;
+            display: none;
+            pointer-events: all;
+        }
+        .dialog-box.active { display: block; }
+        .stats-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            border: 2px solid #444;
+            padding: 10px;
+            font-size: 12px;
+            min-width: 200px;
+        }
+        .leaderboard {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            border: 2px solid #444;
+            padding: 10px;
+            font-size: 12px;
+            max-width: 250px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div class="ui-overlay">
+        <div class="leaderboard">
+            <h3>🏆 Roll for Mischief</h3>
+            <div id="leaderboard-list">Connecting...</div>
+        </div>
+        
+        <div class="stats-panel">
+            <div id="player-stats">
+                <h3>Your Cat</h3>
+                <div>Loading...</div>
+            </div>
+        </div>
+        
+        <div id="dialog-box" class="dialog-box">
+            <div id="dialog-text">Welcome to the alley...</div>
+        </div>
+        
+        <div class="event-log" style="position: absolute; bottom: 20px; right: 20px; width: 400px; height: 150px; background: rgba(0,0,0,0.9); border: 2px solid #444; padding: 10px; font-size: 11px; overflow-y: auto;">
+            <div style="color: #888; margin-bottom: 5px;">Event Log</div>
+            <div id="event-list"></div>
+        </div>
+    </div>
+
+    <script>
+        // Generated sprite data
+const SPRITES = {
+  cat: {
+    data: '00000000000000000000000000000000000000000010000000000000002000000000000000340000000000000530000000000000067340000000000046700000000000000677360000000002377000000000000006777789777777A3777000000000000006777737777777377770000000000000067777777777777777700000000000000B77777777777777777000000000CC0000777777777777777777D000000E77000F7777GDH777770IJ777K00000L77700067777M007777N0PJ777D00000Q77N0006777CR007777N0SJ777K00000Q7N00006777777777777777777K00000Q7N000001377777770K7777770000000H77000000TU777777VE7777NW0000000H77000000X1337777777777E00000000H7700000AAAAA3777777773200000000H77700007777777777777777700000000H77000V777777777777777770000000007700W7777777777777777770000000007700677777777777777777700000000067056776377777777777777000000000030QY777T07777777777771000000000060H7777K07777KN77DN77A000000000060L7777K0777N0E7N0E77A000000000060Z7777D0777N0E7N0177A000000000000H7777D0777708610N77A000000000000K7773230E77L04A0N773T000000000005E7731A0H77700A0N7777D0000000000007773A0Z77700A097777D00000000000000000000000000000000000',
+    colors: {
+  "1": "#d07010",
+  "2": "#c05000",
+  "3": "#a03010",
+  "4": "#d04010",
+  "5": "#704010",
+  "6": "#f05000",
+  "7": "#f07010",
+  "8": "#d04000",
+  "9": "#e06010",
+  "A": "#e04000",
+  "B": "#f04000",
+  "C": "#f08010",
+  "D": "#905020",
+  "E": "#d06010",
+  "F": "#c04010",
+  "G": "#f0a030",
+  "H": "#b05020",
+  "I": "#e09030",
+  "J": "#f09020",
+  "K": "#a05020",
+  "L": "#b05010",
+  "M": "#f0b040",
+  "N": "#e07010",
+  "P": "#e0a040",
+  "Q": "#a05010",
+  "R": "#f0b030",
+  "S": "#e0a030",
+  "T": "#c05010",
+  "U": "#f06010",
+  "V": "#c06010",
+  "W": "#804020",
+  "X": "#b03000",
+  "Y": "#f07000",
+  "Z": "#b06020"
+},
+    size: 32
+  }
+};
+// Ultra-compressed Pathfinder 2e for 13KB - only essential features
+const P = {
+  // Cat classes - minimal data
+  C: {
+    F: { n: 'Fighter', h: 10, a: 3 }, // name, hitDie, attack bonus
+    R: { n: 'Rogue', h: 8, a: 2 },
+    W: { n: 'Wizard', h: 6, a: 1 },
+    C: { n: 'Cleric', h: 8, a: 2 }
+  },
+  
+  // Generate cat (ultra-minimal)
+  g(n = 'Cat') {
+    const keys = Object.keys(this.C);
+    const c = this.C[keys[Math.floor(Math.random() * keys.length)]];
+    const s = () => 3 + (Math.random() * 18 | 0); // 3-20 stats
+    const st = { S: s(), D: s(), C: s(), I: s(), W: s(), H: s() }; // STR,DEX,CON,INT,WIS,CHA
+    const hp = c.h + Math.floor((st.C - 10) / 2);
+    
+    return {
+      n, c, s: st, h: hp, m: hp, // name, class, stats, hp, maxhp
+      a: 10 + Math.floor((st.D - 10) / 2), // AC
+      p: { x: 0, y: 0, z: 0 }, // position
+      v: true, t: 0 // alive, time
+    };
+  },
+  
+  // Roll d20 + modifier
+  r(m = 0) { return Math.floor(Math.random() * 20) + 1 + m; },
+  
+  // Initiative
+  i(cat) { return cat.i = this.r(Math.floor((cat.s.D - 10) / 2)); },
+  
+  // Attack (with optional MAP)
+  k(a, t, map = 0) {
+    const d20 = Math.floor(Math.random() * 20) + 1;
+    const atkBonus = a.c.a + Math.floor((a.s.S - 10) / 2) + map;
+    const total = d20 + atkBonus;
+    const hit = total >= t.a;
+    
+    if (hit) {
+      const d6 = Math.floor(Math.random() * 6) + 1;
+      const strMod = Math.floor((a.s.S - 10) / 2);
+      const dmg = Math.max(1, d6 + strMod);
+      t.h = Math.max(0, t.h - dmg);
+      if (t.h <= 0) t.v = false;
+      return { h: true, d: dmg, d20, atkBonus, total, targetAC: t.a, d6, strMod };
+    }
+    return { h: false, d: 0, d20, atkBonus, total, targetAC: t.a };
+  },
+  
+  // Diplomacy
+  d(cat) { return this.r(Math.floor((cat.s.H - 10) / 2)) >= 12; }
+};
+// Minimal 3D engine for tactical cat battle royale
+const E = {
+  // Initialize 3D engine
+  init(canvas) {
+    this.c = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.w = canvas.width = innerWidth;
+    this.h = canvas.height = innerHeight;
+    
+    // Camera with full control
+    this.cam = {
+      x: 0, y: 50, z: 100,  // Position
+      rx: -0.5, ry: 0, rz: 0,  // Rotation (looking down at city)
+      fov: 60,  // Field of view
+      zoom: 1
+    };
+    
+    // Projection constants
+    this.near = 1;
+    this.far = 1000;
+    
+    // Scene objects
+    this.objects = [];
+    
+    // Store cat screen positions by ID (for arrow rendering)
+    this.catScreenPositions = {};
+    
+    // Grid size (5ft squares for Pathfinder)
+    this.gridSize = 5;
+  },
+  
+  // Add object to scene
+  add(type, x, y, z, w, h, d, color) {
+    const obj = { type, x, y, z, w, h, d, color };
+    
+    // Pre-generate window colors for buildings to prevent vibration
+    if (type === 'building') {
+      const windowColors = ['#FFA500', '#FFD700', '#FF8C00', '#FFAA00', '#FFCC00'];
+      const floors = Math.floor(h / 10);
+      obj.windowColors = [];
+      
+      // Generate colors for each potential window position
+      for (let f = 0; f < floors; f++) {
+        obj.windowColors[f] = [];
+        for (let side = 0; side < 4; side++) { // front, back, left, right
+          for (let pos = 0; pos < 2; pos++) { // left/right or front/back positions
+            const randomIndex = Math.floor(Math.random() * windowColors.length);
+            obj.windowColors[f][side * 2 + pos] = windowColors[randomIndex];
+          }
+        }
+      }
+    }
+    
+    this.objects.push(obj);
+  },
+  
+  // Project 3D point to 2D screen
+  project(x, y, z) {
+    // Transform to camera space
+    let dx = x - this.cam.x;
+    let dy = y - this.cam.y;
+    let dz = z - this.cam.z;
+    
+    // Rotate around Y (horizontal rotation)
+    const cosY = Math.cos(this.cam.ry);
+    const sinY = Math.sin(this.cam.ry);
+    let tx = dx * cosY - dz * sinY;
+    let tz = dx * sinY + dz * cosY;
+    dx = tx;
+    dz = tz;
+    
+    // Rotate around X (vertical tilt)
+    const cosX = Math.cos(this.cam.rx);
+    const sinX = Math.sin(this.cam.rx);
+    let ty = dy * cosX - dz * sinX;
+    tz = dy * sinX + dz * cosX;
+    dy = ty;
+    dz = tz;
+    
+    // Don't render behind camera
+    if (dz < this.near) return null;
+    
+    // Perspective projection
+    const scale = (this.h * 0.5) / Math.tan((this.cam.fov * 0.5) * Math.PI / 180);
+    const px = (dx * scale / dz) * this.cam.zoom + this.w / 2;
+    const py = (-dy * scale / dz) * this.cam.zoom + this.h / 2;
+    
+    return { x: px, y: py, z: dz };
+  },
+  
+  // Draw a 3D box
+  drawBox(x, y, z, w, h, d, color, opacity = 1) {
+    // Define 8 vertices of the box
+    const vertices = [
+      { x: x, y: y, z: z },
+      { x: x + w, y: y, z: z },
+      { x: x + w, y: y, z: z + d },
+      { x: x, y: y, z: z + d },
+      { x: x, y: y + h, z: z },
+      { x: x + w, y: y + h, z: z },
+      { x: x + w, y: y + h, z: z + d },
+      { x: x, y: y + h, z: z + d }
+    ];
+    
+    // Project all vertices
+    const projected = vertices.map(v => this.project(v.x, v.y, v.z));
+    if (projected.some(p => !p)) return;
+    
+    // Define faces with normals for culling
+    const faces = [
+      { indices: [4, 5, 6, 7], color: color, normal: [0, 1, 0] },  // Top
+      { indices: [0, 1, 2, 3], color: this.darken(color, 0.9), normal: [0, -1, 0] },  // Bottom
+      { indices: [0, 4, 7, 3], color: this.darken(color, 0.95), normal: [-1, 0, 0] },  // Left  
+      { indices: [1, 5, 6, 2], color: this.darken(color, 0.95), normal: [1, 0, 0] },  // Right
+      { indices: [0, 1, 5, 4], color: this.darken(color, 0.98), normal: [0, 0, -1] },  // Front
+      { indices: [3, 2, 6, 7], color: this.darken(color, 0.95), normal: [0, 0, 1] }   // Back
+    ];
+    
+    // Face culling - only draw faces pointing toward camera
+    const visibleFaces = faces.filter(face => {
+      const faceCenter = [
+        x + w/2 + face.normal[0] * w/2,
+        y + h/2 + face.normal[1] * h/2,
+        z + d/2 + face.normal[2] * d/2
+      ];
+      const toCam = [
+        this.cam.x - faceCenter[0],
+        this.cam.y - faceCenter[1], 
+        this.cam.z - faceCenter[2]
+      ];
+      // Dot product with face normal - positive means facing camera
+      return face.normal[0] * toCam[0] + face.normal[1] * toCam[1] + face.normal[2] * toCam[2] > 0;
+    });
+    
+    // Calculate depths for visible faces
+    const facesWithDepth = visibleFaces.map(face => {
+      const avgZ = face.indices.reduce((sum, i) => sum + projected[i].z, 0) / face.indices.length;
+      return { ...face, depth: avgZ };
+    });
+    
+    // Sort faces by depth (painter's algorithm)
+    facesWithDepth.sort((a, b) => b.depth - a.depth);
+    
+    // Draw faces
+    this.ctx.globalAlpha = opacity;
+    facesWithDepth.forEach(face => {
+      this.ctx.fillStyle = face.color;
+      this.ctx.beginPath();
+      this.ctx.moveTo(projected[face.indices[0]].x, projected[face.indices[0]].y);
+      for (let i = 1; i < face.indices.length; i++) {
+        this.ctx.lineTo(projected[face.indices[i]].x, projected[face.indices[i]].y);
+      }
+      this.ctx.closePath();
+      this.ctx.fill();
+      
+      // Outline for definition
+      this.ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      this.ctx.lineWidth = 1;
+      this.ctx.stroke();
+    });
+    this.ctx.globalAlpha = 1;
+  },
+  
+  // Draw grid for tactical movement - draw as grid squares instead of lines
+  drawGrid() {
+    this.ctx.strokeStyle = 'rgba(100,100,150,0.3)';
+    this.ctx.lineWidth = 1;
+    
+    const gridRange = 200; // Expand to cover entire play area
+    for (let x = -gridRange; x <= gridRange; x += this.gridSize) {
+      for (let z = -gridRange; z <= gridRange; z += this.gridSize) {
+        // Draw each grid square
+        const corners = [
+          this.project(x, 0, z),
+          this.project(x + this.gridSize, 0, z),
+          this.project(x + this.gridSize, 0, z + this.gridSize),
+          this.project(x, 0, z + this.gridSize)
+        ];
+        
+        // Only draw if all corners are visible
+        if (corners.every(c => c)) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(corners[0].x, corners[0].y);
+          this.ctx.lineTo(corners[1].x, corners[1].y);
+          this.ctx.lineTo(corners[2].x, corners[2].y);
+          this.ctx.lineTo(corners[3].x, corners[3].y);
+          this.ctx.closePath();
+          this.ctx.stroke();
+        }
+      }
+    }
+  },
+  
+  // Darken color (handles both hex and named colors)
+  darken(color, factor) {
+    // Handle undefined/null colors
+    if (!color) return '#666666';
+    
+    // Handle hex colors
+    if (typeof color === 'string' && color.startsWith('#')) {
+      const r = parseInt(color.slice(1, 3), 16);
+      const g = parseInt(color.slice(3, 5), 16);
+      const b = parseInt(color.slice(5, 7), 16);
+      
+      const dr = Math.floor(r * factor);
+      const dg = Math.floor(g * factor);
+      const db = Math.floor(b * factor);
+      
+      return `rgb(${dr},${dg},${db})`;
+    }
+    
+    // For non-hex colors, return as-is
+    return color;
+  },
+  
+  // Clear and setup frame
+  clear() {
+    // Night sky gradient
+    const grad = this.ctx.createLinearGradient(0, 0, 0, this.h);
+    grad.addColorStop(0, '#0a0a1a');
+    grad.addColorStop(0.5, '#1a1a2e');
+    grad.addColorStop(1, '#2a2a3e');
+    this.ctx.fillStyle = grad;
+    this.ctx.fillRect(0, 0, this.w, this.h);
+    
+    // Fog effect
+    const fog = this.ctx.createRadialGradient(this.w/2, this.h/2, 0, this.w/2, this.h/2, this.w*0.7);
+    fog.addColorStop(0, 'rgba(255,165,0,0.02)');
+    fog.addColorStop(1, 'rgba(100,100,200,0.05)');
+    this.ctx.fillStyle = fog;
+    this.ctx.fillRect(0, 0, this.w, this.h);
+  },
+  
+  // Render scene
+  render() {
+    this.clear();
+    this.drawGrid();
+    
+    // Separate objects by type for better depth sorting
+    const buildings = this.objects.filter(obj => obj.type === 'building');
+    const cats = this.objects.filter(obj => obj.type === 'cat' || obj.type === 'boss');
+    
+    // Sort buildings by distance (back to front)
+    const sortedBuildings = buildings.map(obj => {
+      const dx = obj.x + obj.w/2 - this.cam.x;
+      const dy = obj.y + obj.h/2 - this.cam.y;
+      const dz = obj.z + obj.d/2 - this.cam.z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      return { ...obj, dist };
+    }).sort((a, b) => b.dist - a.dist);
+    
+    // Sort cats by distance
+    const sortedCats = cats.map(obj => {
+      const dx = obj.x + obj.w/2 - this.cam.x;
+      const dy = obj.y + obj.h/2 - this.cam.y;
+      const dz = obj.z + obj.d/2 - this.cam.z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      return { ...obj, dist };
+    }).sort((a, b) => b.dist - a.dist);
+    
+    // Draw buildings first (furthest to nearest)
+    sortedBuildings.forEach(obj => {
+      this.drawBox(obj.x, obj.y, obj.z, obj.w, obj.h, obj.d, obj.color);
+      this.drawBuildingWindows(obj);
+    });
+    
+    // Draw cats on top (with proper depth relative to buildings)
+    sortedCats.forEach(catObj => {
+      // Check if cat is behind any building
+      let blocked = false;
+      for (const buildingObj of sortedBuildings) {
+        if (this.isObjectBehind(catObj, buildingObj)) {
+          blocked = true;
+          break;
+        }
+      }
+      
+      if (!blocked) {
+        this.drawCat(catObj);
+      }
+    });
+    
+    // Calculate screen positions for ALL cats after rendering (for arrow positioning)
+    sortedCats.forEach(catObj => {
+      this.calculateCatScreenPosition(catObj);
+    });
+  },
+  
+  // Calculate screen position for cat sprite (for arrow positioning)
+  calculateCatScreenPosition(obj) {
+    if (!obj.catId) return; // Skip if no catId
+    
+    const { x, y, z, w, h, d } = obj;
+    
+    // Project sprite center to screen (same logic as drawCat)
+    const screenPos = this.project(x + w/2, y + h, z + d/2);
+    if (!screenPos) return;
+    
+    // Calculate sprite size (same logic as drawCat)
+    const dx = (x + w/2) - this.cam.x;
+    const dy = (y + h/2) - this.cam.y;  
+    const dz = (z + d/2) - this.cam.z;
+    const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    
+    const worldSize = 5; // 5 feet tall in game world
+    const distanceFromCamera = screenPos.z;
+    const spriteSize = Math.max(8, worldSize * 800 / distanceFromCamera);
+    
+    // Store in global map by catId
+    const spriteTop = screenPos.y - spriteSize;
+    this.catScreenPositions[obj.catId] = { x: screenPos.x, y: spriteTop };
+  },
+  
+  // Check if object A is behind object B from camera perspective
+  isObjectBehind(objA, objB) {
+    const aCenter = {
+      x: objA.x + objA.w/2,
+      y: objA.y + objA.h/2,
+      z: objA.z + objA.d/2
+    };
+    const bCenter = {
+      x: objB.x + objB.w/2,
+      y: objB.y + objB.h/2,
+      z: objB.z + objB.d/2
+    };
+    
+    // Simple AABB intersection test in 2D (x,z plane)
+    const aLeft = objA.x;
+    const aRight = objA.x + objA.w;
+    const aFront = objA.z;
+    const aBack = objA.z + objA.d;
+    
+    const bLeft = objB.x;
+    const bRight = objB.x + objB.w;
+    const bFront = objB.z;
+    const bBack = objB.z + objB.d;
+    
+    // Check for 2D overlap in x,z plane
+    const overlapX = aRight > bLeft && aLeft < bRight;
+    const overlapZ = aBack > bFront && aFront < bBack;
+    
+    if (overlapX && overlapZ) {
+      // Calculate distance from camera
+      const aDist = Math.sqrt(
+        (aCenter.x - this.cam.x) ** 2 + 
+        (aCenter.y - this.cam.y) ** 2 + 
+        (aCenter.z - this.cam.z) ** 2
+      );
+      const bDist = Math.sqrt(
+        (bCenter.x - this.cam.x) ** 2 + 
+        (bCenter.y - this.cam.y) ** 2 + 
+        (bCenter.z - this.cam.z) ** 2
+      );
+      
+      // A is behind B if it's further from camera and overlaps
+      return aDist > bDist;
+    }
+    
+    return false;
+  },
+  
+  // Draw a 3D triangle
+  drawTriangle(v1, v2, v3, color) {
+    // Project vertices
+    const p1 = this.project(v1.x, v1.y, v1.z);
+    const p2 = this.project(v2.x, v2.y, v2.z);
+    const p3 = this.project(v3.x, v3.y, v3.z);
+    
+    // Skip if any vertex is behind camera
+    if (!p1 || !p2 || !p3) return;
+    
+    // Calculate normal for backface culling
+    const edge1 = { x: v2.x - v1.x, y: v2.y - v1.y, z: v2.z - v1.z };
+    const edge2 = { x: v3.x - v1.x, y: v3.y - v1.y, z: v3.z - v1.z };
+    const normal = {
+      x: edge1.y * edge2.z - edge1.z * edge2.y,
+      y: edge1.z * edge2.x - edge1.x * edge2.z,
+      z: edge1.x * edge2.y - edge1.y * edge2.x
+    };
+    
+    // Face center for culling test
+    const center = {
+      x: (v1.x + v2.x + v3.x) / 3,
+      y: (v1.y + v2.y + v3.y) / 3,
+      z: (v1.z + v2.z + v3.z) / 3
+    };
+    
+    const toCam = {
+      x: this.cam.x - center.x,
+      y: this.cam.y - center.y,
+      z: this.cam.z - center.z
+    };
+    
+    // Skip back-facing triangles
+    const dot = normal.x * toCam.x + normal.y * toCam.y + normal.z * toCam.z;
+    if (dot < 0) return;
+    
+    // Draw triangle
+    this.ctx.fillStyle = color;
+    this.ctx.beginPath();
+    this.ctx.moveTo(p1.x, p1.y);
+    this.ctx.lineTo(p2.x, p2.y);
+    this.ctx.lineTo(p3.x, p3.y);
+    this.ctx.closePath();
+    this.ctx.fill();
+    
+    // Subtle outline
+    this.ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    this.ctx.lineWidth = 0.5;
+    this.ctx.stroke();
+  },
+  
+  // Sprite system - uses generated SPRITES data
+  sprites: typeof SPRITES !== 'undefined' ? {
+    cat: SPRITES.cat.data,
+    colors: SPRITES.cat.colors,
+    size: SPRITES.cat.size
+  } : {
+    // Fallback sprites if SPRITES not loaded
+    cat: '00000000000000000000000000000000',
+    colors: {'0': 'rgba(0,0,0,0)'},
+    size: 16
+  },
+  
+  // Draw sprite using classic matrix access [row*size+col] 
+  drawSprite(spriteStr, colors, x, y, size, spriteSize = 32, tintColor = null, options = {}) {
+    const pixelSize = size / spriteSize;
+    const { isDefeated = false, clipToHead = false, isBoss = false } = options;
+    
+    // For defeated cats, only render the head portion (skull effect)
+    const startRow = clipToHead ? 2 : 0; // Start a bit lower to get ears
+    const endRow = clipToHead ? 16 : spriteSize; // Include more of head
+    const startCol = clipToHead ? 8 : 0; // Trim left side  
+    const endCol = clipToHead ? spriteSize : spriteSize; // Keep full right side
+    
+    for (let row = startRow; row < endRow; row++) {
+      for (let col = startCol; col < endCol; col++) {
+        const char = spriteStr[row * spriteSize + col];
+        let color = colors[char];
+        
+        if (color) { // Skip transparent (0)
+          // Apply defeated effect (bleached/grayscale)
+          if (isDefeated) {
+            color = this.bleachColor(color);
+          } else if (isBoss) {
+            // Boss cat is pure black/dark
+            color = this.darkenColor(color);
+          } else if (tintColor) {
+            // Apply tint color if provided (only for living cats)
+            color = this.blendColors(color, tintColor);
+          }
+          
+          this.ctx.fillStyle = color;
+          this.ctx.fillRect(x + col * pixelSize, y + row * pixelSize, pixelSize, pixelSize);
+        }
+      }
+    }
+    
+    // Draw black square eyes for defeated cats
+    if (isDefeated && clipToHead) {
+      this.drawDefeatedEyes(x, y, size, spriteSize);
+    }
+  },
+  
+  // Blend original color with tint color
+  blendColors(baseColor, tintColor) {
+    // Moderate tint blend - mix 60% original + 40% tint
+    const base = this.hexToRgb(baseColor);
+    const tint = this.hexToRgb(tintColor);
+    const tintStrength = 0.4;
+    
+    const r = Math.floor(base.r * (1 - tintStrength) + tint.r * tintStrength);
+    const g = Math.floor(base.g * (1 - tintStrength) + tint.g * tintStrength);
+    const b = Math.floor(base.b * (1 - tintStrength) + tint.b * tintStrength);
+    
+    return `rgb(${r},${g},${b})`;
+  },
+  
+  // Convert hex to RGB
+  hexToRgb(hex) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return { r, g, b };
+  },
+  
+  // Convert color to bleached/grayscale for defeated cats
+  bleachColor(color) {
+    const rgb = this.hexToRgb(color);
+    // Convert to grayscale using luminance formula, then brighten
+    const gray = Math.floor((rgb.r * 0.3 + rgb.g * 0.59 + rgb.b * 0.11) * 1.5);
+    const bleached = Math.min(255, gray);
+    return `rgb(${bleached},${bleached},${bleached})`;
+  },
+  
+  // Darken color for boss cat
+  darkenColor(color) {
+    const rgb = this.hexToRgb(color);
+    // Make it very dark/black
+    const dark = Math.floor((rgb.r * 0.3 + rgb.g * 0.3 + rgb.b * 0.3) * 0.2);
+    return `rgb(${dark},${dark},${dark})`;
+  },
+  
+  // Draw X eyes for defeated cats
+  drawDefeatedEyes(x, y, size, spriteSize) {
+    const pixelSize = size / spriteSize;
+    this.ctx.fillStyle = '#000000';
+    
+    // Eye positions (adjusted to match actual cat eye locations)
+    const leftEyeX = x + 14 * pixelSize;
+    const rightEyeX = x + 22 * pixelSize;
+    const eyeY = y + 10 * pixelSize;
+    const eyeWidth = pixelSize * 4;
+    const eyeHeight = pixelSize * 3;
+    
+    // Draw black rectangle for left eye
+    this.ctx.fillRect(leftEyeX, eyeY, eyeWidth, eyeHeight);
+    
+    // Draw black rectangle for right eye  
+    this.ctx.fillRect(rightEyeX, eyeY, eyeWidth, eyeHeight);
+  },
+  
+  // Draw cat using DOOM-style billboard sprite system
+  drawCat(obj) {
+    const { x, y, z, w, h, d, color, type } = obj;
+    
+    // Calculate distance from camera to original position for culling
+    const dx = x - this.cam.x;
+    const dy = (y + h/2) - this.cam.y;  
+    const dz = z - this.cam.z;
+    const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    
+    // Skip if too far away
+    if (distance > this.far) return;
+    
+    // Calculate grid square bounds and force cat to ground plane center
+    const gridX = Math.floor(x / this.gridSize) * this.gridSize;
+    const gridZ = Math.floor(z / this.gridSize) * this.gridSize;
+    const gridSize = type === 'boss' ? this.gridSize * 2 : this.gridSize;
+    
+    // Force cat to exact center of grid square on ground plane
+    const centerX = gridX + gridSize/2;
+    const centerZ = gridZ + gridSize/2;
+    const screenPos = this.project(centerX, 0, centerZ); // Force to ground (y=0)
+    if (!screenPos) return;
+    
+    // Calculate corners for highlight
+    const corners = [
+      this.project(gridX, 0, gridZ),
+      this.project(gridX + gridSize, 0, gridZ),
+      this.project(gridX + gridSize, 0, gridZ + gridSize),
+      this.project(gridX, 0, gridZ + gridSize)
+    ];
+    
+    // Fixed size sprites - consistent size regardless of distance
+    const spriteSize = type === 'boss' ? 80 : 40; // Boss bigger than regular cats
+    
+    // Check if cat is defeated by looking up in game state
+    let isDefeated = false;
+    if (obj.catId && window.G && window.G.turnOrder) {
+      const catData = window.G.turnOrder.find(cat => cat.id === obj.catId);
+      isDefeated = catData && !catData.v; // v = alive
+      if (isDefeated) {
+        console.log(`Cat ${obj.catId} is defeated: hp=${catData.h}, alive=${catData.v}`);
+      }
+    }
+    
+    // Draw highlight square for cat's grid position (reuse calculated corners)
+    if (window.G && window.G.combat) {
+      this.ctx.strokeStyle = isDefeated ? 'rgba(100,100,100,0.3)' : 'rgba(255,255,100,0.3)';
+      this.ctx.lineWidth = 2;
+      
+      // Use the same corners we calculated for centering
+      if (corners.every(c => c)) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(corners[0].x, corners[0].y);
+        this.ctx.lineTo(corners[1].x, corners[1].y);
+        this.ctx.lineTo(corners[2].x, corners[2].y);
+        this.ctx.lineTo(corners[3].x, corners[3].y);
+        this.ctx.closePath();
+        this.ctx.stroke();
+      }
+    }
+    
+    // Draw sprite as billboard (always faces camera)
+    let spriteTop = screenPos.y - spriteSize;
+    
+    // Boss cat needs to render lower since it's bigger
+    if (type === 'boss') {
+      spriteTop += 10; // Lower the boss sprite (split the difference)
+    }
+    
+    // Defeated cats need offset too since they're clipped
+    if (isDefeated) {
+      spriteTop += spriteSize * 0.4; // Pull skull sprites down
+    }
+    
+    this.drawSprite(
+      this.sprites.cat, 
+      this.sprites.colors,
+      screenPos.x - spriteSize/2, 
+      spriteTop, 
+      spriteSize,
+      this.sprites.size, // Use dynamic sprite size
+      type === 'boss' ? null : color, // Boss is black (no tint), others get tint
+      { isDefeated, clipToHead: isDefeated, isBoss: type === 'boss' } // Pass defeat options
+    );
+    
+    // Store sprite screen position for arrow rendering
+    obj.screenTop = { x: screenPos.x, y: spriteTop };
+  },
+  
+  // Draw windows only on visible building faces with varied colors/sizes
+  drawBuildingWindows(building) {
+    const { x, y, z, w, h, d, windowColors } = building;
+    
+    // Check which faces are visible using same logic as drawBox
+    const faces = [
+      { normal: [-1, 0, 0], side: 'left', index: 0 },   // Left face
+      { normal: [1, 0, 0], side: 'right', index: 1 },   // Right face
+      { normal: [0, 0, -1], side: 'front', index: 2 },  // Front face
+      { normal: [0, 0, 1], side: 'back', index: 3 }     // Back face
+    ];
+    
+    // Use exact same face culling logic as drawBox
+    const visibleFaces = faces.filter(face => {
+      const faceCenter = [
+        x + w/2 + face.normal[0] * w/2,
+        y + h/2 + face.normal[1] * h/2,
+        z + d/2 + face.normal[2] * d/2
+      ];
+      const toCam = [
+        this.cam.x - faceCenter[0],
+        this.cam.y - faceCenter[1], 
+        this.cam.z - faceCenter[2]
+      ];
+      // Dot product with face normal - positive means facing camera
+      return face.normal[0] * toCam[0] + face.normal[1] * toCam[1] + face.normal[2] * toCam[2] > 0;
+    });
+
+    visibleFaces.forEach(face => {
+        // More windows per building - every 6 units instead of 10
+        const windowSpacing = 6;
+        const windowRows = Math.floor(h / windowSpacing);
+        
+        for (let f = 1; f <= windowRows; f++) {
+          const wy = f * windowSpacing - 3;
+          
+          // Minimum square height that can grow taller
+          const windowW = 2.5; // Fixed width
+          const minH = windowW; // Minimum = square (same as width)
+          const maxH = windowW * 2; // Can grow up to 2x width
+          const seed = Math.sin(f * 1.7 + x * 0.3 + z * 0.7) * 0.5 + 0.5;
+          
+          // Check if window would exceed building height with padding
+          const padding = 3; // Leave 3 units from top
+          const maxAllowedH = Math.max(minH, h - wy - padding);
+          const clampedMaxH = Math.min(maxH, maxAllowedH);
+          const windowH = minH + seed * (clampedMaxH - minH);
+          
+          // Use pre-generated colors to prevent vibration
+          const colorIndex = Math.floor((f - 1) * 4 + face.index * 2);
+          const windowColor = windowColors && windowColors[f - 1] && windowColors[f - 1][colorIndex] 
+            ? windowColors[f - 1][colorIndex] 
+            : '#FFA500'; // fallback
+          
+          if (face.side === 'front') {
+            this.drawBox(x + 2, y + wy, z - 0.1, windowW, windowH, 0.2, windowColor);
+            if (w > 10) {
+              const colorIndex2 = colorIndex + 1;
+              const windowColor2 = windowColors && windowColors[f - 1] && windowColors[f - 1][colorIndex2] 
+                ? windowColors[f - 1][colorIndex2] 
+                : '#FFD700'; // fallback
+              this.drawBox(x + w - 2 - windowW, y + wy, z - 0.1, windowW, windowH, 0.2, windowColor2);
+            }
+          } else if (face.side === 'back') {
+            this.drawBox(x + 2, y + wy, z + d - 0.1, windowW, windowH, 0.2, windowColor);
+            if (w > 10) {
+              const colorIndex2 = colorIndex + 1;
+              const windowColor2 = windowColors && windowColors[f - 1] && windowColors[f - 1][colorIndex2] 
+                ? windowColors[f - 1][colorIndex2] 
+                : '#FFD700'; // fallback
+              this.drawBox(x + w - 2 - windowW, y + wy, z + d - 0.1, windowW, windowH, 0.2, windowColor2);
+            }
+          } else if (face.side === 'left') {
+            this.drawBox(x - 0.1, y + wy, z + 2, 0.2, windowH, windowW, windowColor);
+            if (d > 10) {
+              const colorIndex2 = colorIndex + 1;
+              const windowColor2 = windowColors && windowColors[f - 1] && windowColors[f - 1][colorIndex2] 
+                ? windowColors[f - 1][colorIndex2] 
+                : '#FFD700'; // fallback
+              this.drawBox(x - 0.1, y + wy, z + d - 2 - windowW, 0.2, windowH, windowW, windowColor2);
+            }
+          } else if (face.side === 'right') {
+            this.drawBox(x + w - 0.1, y + wy, z + 2, 0.2, windowH, windowW, windowColor);
+            if (d > 10) {
+              const colorIndex2 = colorIndex + 1;
+              const windowColor2 = windowColors && windowColors[f - 1] && windowColors[f - 1][colorIndex2] 
+                ? windowColors[f - 1][colorIndex2] 
+                : '#FFD700'; // fallback
+              this.drawBox(x + w - 0.1, y + wy, z + d - 2 - windowW, 0.2, windowH, windowW, windowColor2);
+            }
+          }
+        }
+    });
+  },
+  
+  // Camera controls
+  moveCamera(dx, dy, dz) {
+    this.cam.x += dx;
+    this.cam.y += dy;
+    this.cam.z += dz;
+  },
+  
+  rotateCamera(drx, dry) {
+    this.cam.rx = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.cam.rx + drx));
+    this.cam.ry += dry;
+  },
+  
+  zoomCamera(factor) {
+    this.cam.zoom = Math.max(0.5, Math.min(3, this.cam.zoom * factor));
+  },
+  
+  // Set camera to isometric view
+  setIsometric() {
+    this.cam.rx = -Math.PI / 4;
+    this.cam.ry = Math.PI / 4;
+    this.cam.y = 50;
+    this.cam.zoom = 1;
+  }
+};
+// Tactical cat battle royale with full 3D movement
+let G = {
+  s: 'playing',
+  p: null,
+  cs: [],
+  t: 0,
+  k: new Set(),
+  mouseDrag: false,
+  rightMouseDrag: false,
+  lastMouse: { x: 0, y: 0 },
+  
+  // WebSocket
+  w: null,
+  id: 'cat_' + (Math.random() * 1e6 | 0),
+  
+  // Combat state
+  combat: null,
+  turnOrder: [],
+  currentTurn: 0,
+  currentActions: 3,
+  actionType: null, // 'move' or 'attack'
+  attackCount: 0,
+  moveDistance: 0, // Track movement used this turn
+  eventLog: [],
+  
+  // Initialize
+  init() {
+    const canvas = document.querySelector('canvas');
+    E.init(canvas);
+    
+    // Cat colors for differentiation (work better with orange base)
+    this.catColors = ['#ffaa00', '#ff2222', '#88ff88', '#ffffff', '#ff44ff', '#ffff44', '#44ffff'];
+    
+    // Generate player
+    this.p = P.g('You');
+    this.p.id = 'player';
+    this.p.pos = { x: 0, y: 0, z: 0 };
+    this.p.color = this.catColors[0]; // Player gets first color
+    this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
+    
+    // Generate 3D city
+    this.generateCity();
+    
+    // Add player to scene
+    E.add('cat', this.p.pos.x, this.p.pos.y, this.p.pos.z, 3, 5, 3, this.p.color);
+    // Set catId on the player's object
+    const playerObj = E.objects[E.objects.length - 1];
+    playerObj.catId = this.p.id;
+    
+    // Add BOSS CAT - 10ft x 10ft black cat
+    const boss = P.g('??????');
+    boss.id = 'boss';
+    boss.n = '??????';
+    // Create copy of class to avoid corrupting shared reference
+    boss.c = { ...boss.c, n: '??????' };
+    boss.isBoss = true;
+    // Make boss overpowered
+    boss.h = boss.m = 100; // 100 HP
+    boss.a = 15; // High AC
+    boss.c.a = 8; // High attack bonus
+    boss.s = { S: 20, D: 14, C: 20, I: 10, W: 10, H: 10 }; // Strong stats
+    boss.color = '#000000'; // Black
+    boss.pos = { x: 0, y: 0, z: 30 }; // Center-back position
+    this.cs.push(boss);
+    const bossObj = { type: 'boss', x: boss.pos.x, y: boss.pos.y, z: boss.pos.z, w: 10, h: 10, d: 10, color: boss.color, catId: boss.id };
+    E.objects.push(bossObj);
+    
+    // Add 2-3 regular cats for testing - grid snapped positions
+    const usedPositions = new Set(['0,0', '0,30']); // Player at origin, boss at 0,30
+    for (let i = 0; i < 3; i++) {
+      const enemy = P.g(`Cat${i+1}`);
+      enemy.id = `enemy_${i}`;
+      enemy.color = this.catColors[i + 1]; // Each enemy gets different color
+      
+      // Find available grid position
+      let x, z, posKey;
+      do {
+        x = (Math.floor(Math.random() * 12) - 6) * 5; // -30 to +30 in 5ft increments
+        z = (Math.floor(Math.random() * 12) - 6) * 5;
+        posKey = `${x},${z}`;
+      } while (usedPositions.has(posKey));
+      
+      usedPositions.add(posKey);
+      enemy.pos = { x, y: 0, z };
+      this.cs.push(enemy);
+      const catObj = { type: 'cat', x: enemy.pos.x, y: enemy.pos.y, z: enemy.pos.z, w: 3, h: 5, d: 3, color: enemy.color, catId: enemy.id };
+      E.objects.push(catObj);
+    }
+    
+    // Position camera behind and above cat for proper view
+    E.cam.x = this.p.pos.x;
+    E.cam.y = 25;  
+    E.cam.z = this.p.pos.z - 25;  // Further back behind cat
+    E.cam.rx = -0.3;  // Looking down at cat
+    E.cam.ry = 0;
+    
+    // Camera controls
+    canvas.addEventListener('mousedown', e => {
+      if (e.button === 0) {  // Left click
+        this.mouseDrag = true;
+      } else if (e.button === 2) {  // Right click
+        this.rightMouseDrag = true;
+        e.preventDefault();
+      }
+      this.lastMouse = { x: e.clientX, y: e.clientY };
+    });
+    
+    canvas.addEventListener('mouseup', () => {
+      this.mouseDrag = false;
+      this.rightMouseDrag = false;
+    });
+    
+    canvas.addEventListener('contextmenu', e => {
+      e.preventDefault(); // Disable right-click menu
+    });
+    
+    canvas.addEventListener('mousemove', e => {
+      if (this.mouseDrag || this.rightMouseDrag) {
+        const dx = e.clientX - this.lastMouse.x;
+        const dy = e.clientY - this.lastMouse.y;
+        
+        if (this.mouseDrag) {
+          // Left drag: rotate camera
+          E.rotateCamera(-dy * 0.01, dx * 0.01);
+        } else if (this.rightMouseDrag) {
+          // Right drag: move camera relative to rotation
+          const moveSpeed = 0.5;
+          const camYaw = E.cam.ry;
+          const cos = Math.cos(camYaw);
+          const sin = Math.sin(camYaw);
+          
+          // Horizontal drag = strafe left/right relative to camera
+          const strafeX = dx * cos * moveSpeed;
+          const strafeZ = dx * sin * moveSpeed;
+          
+          // Vertical drag = move up/down (global Y)
+          E.moveCamera(strafeX, -dy * moveSpeed, strafeZ);
+        }
+        
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+      }
+    });
+    
+    canvas.addEventListener('wheel', e => {
+      const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      E.zoomCamera(factor);
+      e.preventDefault();
+    });
+    
+    // Keyboard controls
+    document.addEventListener('keydown', e => {
+      this.k.add(e.code);
+      
+      if (e.code === 'KeyI') E.setIsometric();
+      if (e.code === 'Space') this.interact();
+      if (e.code === 'KeyM') this.setAction('move');
+      if (e.code === 'KeyX') this.setAction('attack');
+      if (e.code === 'Escape') this.endAction();
+    });
+    document.addEventListener('keyup', e => this.k.delete(e.code));
+    
+    // Connect multiplayer
+    this.connect();
+    
+    // Update UI
+    this.updateUI();
+    
+    // Start combat immediately for testing  
+    this.startCombat([this.p, ...this.cs]);
+    
+    // Ensure camera follows player after combat start
+    E.cam.x = this.p.pos.x;
+    E.cam.z = this.p.pos.z - 25;
+    
+    // Start loop
+    this.loop();
+  },
+  
+  // Connect to multiplayer
+  connect() {
+    try {
+      this.w = new WebSocket('wss://relay.js13kgames.com/roll-for-mischief');
+      this.w.onopen = () => this.send('join', { id: this.id, cat: this.p });
+      this.w.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data);
+          this.handle(msg);
+        } catch (err) {}
+      };
+    } catch (e) {}
+  },
+  
+  // Send message
+  send(type, data) {
+    if (this.w && this.w.readyState === 1) {
+      this.w.send(JSON.stringify({ type, data: { ...data, id: this.id } }));
+    }
+  },
+  
+  // Handle message
+  handle(msg) {
+    switch (msg.type) {
+      case 'join':
+        if (msg.data.id !== this.id) {
+          const cat = msg.data.cat;
+          cat.id = msg.data.id;
+          this.cs.push(cat);
+          E.add('cat', cat.pos.x, cat.pos.y, cat.pos.z, 3, 5, 3, '#654321');
+        }
+        break;
+      case 'move':
+        if (msg.data.id !== this.id) {
+          const cat = this.cs.find(c => c.id === msg.data.id);
+          if (cat) {
+            cat.pos = msg.data.pos;
+            const catObj = E.objects.find(obj => obj.type === 'cat' && obj.x === cat.pos.x && obj.z === cat.pos.z);
+            if (catObj) {
+              catObj.x = cat.pos.x;
+              catObj.z = cat.pos.z;
+            }
+          }
+        }
+        break;
+    }
+  },
+  
+  // Generate 3D city with proper streets
+  generateCity() {
+    // Street width = 20ft (4 tiles)
+    // Buildings are 30x30ft on average
+    
+    for (let bx = -5; bx <= 5; bx++) {
+      for (let bz = -5; bz <= 5; bz++) {
+        // Building block position
+        const blockX = bx * 60; // 30ft building + 30ft space
+        const blockZ = bz * 60;
+        
+        // Skip center for spawn
+        if (Math.abs(bx) <= 1 && Math.abs(bz) <= 1) continue;
+        
+        // Building dimensions
+        const w = 25 + Math.random() * 10; // 25-35ft
+        const h = 15 + Math.random() * 50; // 15-65ft tall
+        const d = 25 + Math.random() * 10;
+        
+        // Building color variants
+        const colors = ['#4a4a6a', '#5a5a7a', '#6a5a7a', '#5a6a7a'];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        
+        E.add('building', blockX - w/2, 0, blockZ - d/2, w, h, d, color);
+      }
+    }
+    
+    // Add some smaller buildings between blocks
+    for (let i = 0; i < 20; i++) {
+      const x = (Math.random() - 0.5) * 400;
+      const z = (Math.random() - 0.5) * 400;
+      
+      // Don't place too close to center
+      if (Math.abs(x) < 50 && Math.abs(z) < 50) continue;
+      
+      const w = 10 + Math.random() * 15;
+      const h = 8 + Math.random() * 25;
+      const d = 10 + Math.random() * 15;
+      
+      E.add('building', x, 0, z, w, h, d, '#3a3a5a');
+    }
+  },
+  
+  // Game loop
+  loop() {
+    this.update();
+    this.render();
+    requestAnimationFrame(() => this.loop());
+  },
+  
+  // Update
+  update() {
+    this.updateCamera();
+    this.updatePlayer();
+  },
+  
+  // Update camera movement
+  updateCamera() {
+    const speed = 2;
+    
+    // Calculate movement relative to camera rotation
+    const camYaw = -E.cam.ry;  // Try negative to fix coordination
+    const cos = Math.cos(camYaw);
+    const sin = Math.sin(camYaw);
+    
+    
+    if (this.k.has('KeyW')) {
+      // Forward relative to camera
+      E.moveCamera(-sin * speed, 0, cos * speed);
+    }
+    if (this.k.has('KeyS')) {
+      // Backward relative to camera
+      E.moveCamera(sin * speed, 0, -cos * speed);
+    }
+    if (this.k.has('KeyA')) {
+      // Left relative to camera
+      E.moveCamera(-cos * speed, 0, -sin * speed);
+    }
+    if (this.k.has('KeyD')) {
+      // Right relative to camera
+      E.moveCamera(cos * speed, 0, sin * speed);
+    }
+    if (this.k.has('KeyQ')) E.moveCamera(0, speed, 0);
+    if (this.k.has('KeyE')) E.moveCamera(0, -speed, 0);
+  },
+  
+  // Check if position is occupied by a cat
+  occupied(x, z, e = null) {
+    // Check player position
+    if (this.p !== e && this.p.pos.x === x && this.p.pos.z === z) return 1;
+    
+    // Check all cats
+    return this.cs.some(c => {
+      if (c === e || !c.v) return false;
+      
+      if (c.isBoss) {
+        // Boss cat occupies 2x2 grid (10ft x 10ft)
+        const bossLeft = c.pos.x - 5;
+        const bossRight = c.pos.x + 5;
+        const bossTop = c.pos.z - 5;
+        const bossBottom = c.pos.z + 5;
+        
+        return x >= bossLeft && x <= bossRight && z >= bossTop && z <= bossBottom;
+      } else {
+        // Regular cat occupies single 5ft square
+        return c.pos.x === x && c.pos.z === z;
+      }
+    });
+  },
+  
+  // Update player
+  updatePlayer() {
+    const moveDelay = 300; // Turn-based feel
+    const now = Date.now();
+    
+    if (this.combat) {
+      // In combat, only current player can move and must have actions/move selected
+      if (this.turnOrder[this.currentTurn] !== this.p) return;
+      if (this.actionType !== 'move' || this.currentActions <= 0) return;
+      if (this.moveDistance >= 25) return; // Max 25ft movement per turn
+    }
+    
+    if (!this.lastMove || now - this.lastMove > moveDelay) {
+      let moved = false;
+      const gridSize = 5; // 5ft squares
+      let newX = this.p.pos.x;
+      let newZ = this.p.pos.z;
+      
+      // Calculate new position based on input
+      if (this.k.has('ArrowUp')) {
+        newZ += gridSize;  // South (reversed)
+      }
+      if (this.k.has('ArrowDown')) {
+        newZ -= gridSize;  // North (reversed)
+      }
+      if (this.k.has('ArrowLeft')) {
+        newX -= gridSize;  // West
+      }
+      if (this.k.has('ArrowRight')) {
+        newX += gridSize;  // East
+      }
+      
+      // Only move if the new position is not occupied
+      if ((newX !== this.p.pos.x || newZ !== this.p.pos.z) && !this.occupied(newX, newZ, this.p)) {
+        this.p.pos.x = newX;
+        this.p.pos.z = newZ;
+        moved = true;
+      }
+      
+      if (moved) {
+        this.lastMove = now;
+        
+        // Track movement distance in combat
+        if (this.combat && this.actionType === 'move') {
+          this.moveDistance += 5;
+          this.addEvent(`Moved 5ft (${this.moveDistance}/25ft used)`);
+          
+          // Consume action every 25ft of movement
+          if (this.moveDistance >= 25) {
+            this.currentActions--;
+            this.moveDistance = 0; // Reset for next action
+            this.addEvent(`Movement action consumed. ${this.currentActions} actions remaining.`);
+            if (this.currentActions <= 0) this.actionType = null;
+          }
+        }
+        
+        // Update cat in scene
+        const catIndex = E.objects.findIndex(obj => obj.type === 'cat');
+        if (catIndex >= 0) {
+          E.objects[catIndex].x = this.p.pos.x;
+          E.objects[catIndex].z = this.p.pos.z;
+        }
+        
+        // Send movement to other players
+        this.send('move', { pos: this.p.pos });
+        
+        // Check for nearby enemies
+        this.checkCombat();
+        
+        // Camera following - move camera by same amount cat moved
+        const deltaX = this.p.pos.x - this.lastCatPos.x;
+        const deltaZ = this.p.pos.z - this.lastCatPos.z;
+        
+        E.cam.x += deltaX;  // Move camera by exact same amount
+        E.cam.z += deltaZ;
+        
+        // Store current cat position for next time
+        this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
+      }
+    }
+  },
+  
+  // Check for combat initiation
+  checkCombat() {
+    // Look for nearby cats within 30ft (6 squares)
+    const nearby = this.cs.filter(cat => {
+      const dx = cat.pos.x - this.p.pos.x;
+      const dz = cat.pos.z - this.p.pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      return dist <= 30 && cat.v;
+    });
+    
+    if (nearby.length > 0 && !this.combat) {
+      this.startCombat([this.p, ...nearby]);
+    }
+  },
+  
+  // Start tactical combat
+  startCombat(cats) {
+    this.combat = {
+      participants: cats,
+      round: 1
+    };
+    
+    // Roll initiative for all participants
+    cats.forEach(cat => P.i(cat));
+    this.turnOrder = cats.sort((a, b) => b.i - a.i);
+    
+    // Start with highest initiative (index 0)
+    this.currentTurn = 0;
+    
+    console.log(`Combat started! Turn order: ${this.turnOrder.map(c => c.c.n).join(', ')}`);
+    
+    // Start the first turn
+    const firstCat = this.turnOrder[0];
+    this.addEvent(`${firstCat.c.n}'s turn begins`);
+    
+    // If first cat is AI, trigger its behavior
+    if (firstCat !== this.p && firstCat.v) {
+      setTimeout(() => this.runAITurn(firstCat), 1000);
+    }
+    
+    // Position camera for combat
+    const centerX = cats.reduce((sum, c) => sum + c.pos.x, 0) / cats.length;
+    const centerZ = cats.reduce((sum, c) => sum + c.pos.z, 0) / cats.length;
+    
+    E.cam.x = centerX;
+    E.cam.z = centerZ + 40;
+    E.cam.y = 25;
+    E.cam.rx = -0.3;
+  },
+  
+  // Handle interactions
+  interact() {
+    if (this.combat) {
+      this.nextTurn();
+    }
+  },
+  
+  // Add event to log
+  addEvent(text) {
+    this.eventLog.unshift(text);
+    if (this.eventLog.length > 8) this.eventLog.pop(); // Keep last 8 events
+    
+    // Update HTML event log
+    const eventList = document.querySelector('#event-list');
+    if (eventList) {
+      const eventDiv = document.createElement('div');
+      eventDiv.style.color = '#00ff00';
+      eventDiv.style.marginBottom = '2px';
+      eventDiv.textContent = text;
+      eventList.insertBefore(eventDiv, eventList.firstChild);
+      
+      // Remove old events
+      while (eventList.children.length > 8) {
+        eventList.removeChild(eventList.lastChild);
+      }
+    }
+  },
+  
+  // Simple text wrapping
+  wrapText(text, maxLength) {
+    if (text.length <= maxLength) return [text];
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+    
+    words.forEach(word => {
+      if ((currentLine + word).length <= maxLength) {
+        currentLine += (currentLine ? ' ' : '') + word;
+      } else {
+        if (currentLine) lines.push(currentLine);
+        currentLine = word;
+      }
+    });
+    if (currentLine) lines.push(currentLine);
+    return lines;
+  },
+
+  // Set current action type
+  setAction(type) {
+    if (!this.combat || this.currentActions <= 0) return;
+    if (this.turnOrder[this.currentTurn] !== this.p) return;
+    
+    this.actionType = type;
+    this.addEvent(`Selected ${type} action`);
+    
+    // Auto-attack if attack selected and enemies in range
+    if (type === 'attack') {
+      this.attemptAttack();
+    }
+  },
+  
+  // End current action
+  endAction() {
+    if (!this.combat || this.turnOrder[this.currentTurn] !== this.p) return;
+    
+    if (this.actionType === 'move' && this.moveDistance > 0) {
+      // Consume action for partial movement
+      this.currentActions--;
+      this.addEvent(`Movement ended. ${this.currentActions} actions remaining.`);
+      this.moveDistance = 0;
+    }
+    
+    this.actionType = null;
+  },
+  
+  // Attempt attack on nearby enemies
+  attemptAttack() {
+    const enemies = this.cs.filter(cat => {
+      const dx = cat.pos.x - this.p.pos.x;
+      const dz = cat.pos.z - this.p.pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      return dist <= 5 && cat.v; // Adjacent square
+    });
+    
+    if (enemies.length > 0) {
+      const target = enemies[0]; // Attack first enemy
+      const map = this.attackCount * -5; // Multiple Attack Penalty
+      const result = P.k(this.p, target, map);
+      
+      this.currentActions--;
+      this.attackCount++;
+      
+      const mapText = map < 0 ? ` (MAP ${map})` : '';
+      const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
+      const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
+      
+      if (result.h) {
+        const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
+        const dmgText = `1d6${strText} [${result.d}]`;
+        this.addEvent(`Claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
+        if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+      } else {
+        this.addEvent(`Claw attack${mapText}: ${rollText} MISS`);
+      }
+      
+      // Check if combat should end
+      const alive = this.turnOrder.filter(cat => cat.v);
+      if (alive.length <= 1) {
+        this.endCombat();
+        return;
+      }
+      
+      if (this.currentActions <= 0) this.actionType = null;
+    } else {
+      console.log('No enemies in range to attack!');
+    }
+  },
+  
+  // Next combat turn
+  nextTurn() {
+    // Skip dead cats
+    do {
+      this.currentTurn = (this.currentTurn + 1) % this.turnOrder.length;
+    } while (!this.turnOrder[this.currentTurn].v);
+    
+    this.currentActions = 3; // Reset actions for new turn
+    this.actionType = null;
+    this.attackCount = 0;
+    this.moveDistance = 0; // Reset movement
+    
+    if (this.currentTurn === 0) {
+      this.combat.round++;
+    }
+    
+    const currentCat = this.turnOrder[this.currentTurn];
+    this.addEvent(`${currentCat.c.n}'s turn begins`);
+    
+    // AI behavior for NPCs
+    if (currentCat !== this.p && currentCat.v) {
+      setTimeout(() => this.runAITurn(currentCat), 1500);
+    }
+  },
+  
+  // Run AI turn for a cat
+  runAITurn(currentCat) {
+    let actions = 3;
+    let attacks = 0;
+    
+    // Find alive targets (exclude self)
+    const targets = this.turnOrder.filter(cat => cat.v && cat.id !== currentCat.id);
+    if (targets.length === 0) {
+      this.endCombat();
+      return;
+    }
+    
+    console.log(`${currentCat.c.n} (${currentCat.id}) has ${targets.length} targets: ${targets.map(t => t.c.n + '(' + t.id + ')').join(', ')}`);
+    
+    // Pick closest target (simple AI - they may attack each other or boss)
+    let target = targets[0];
+    let minDist = Infinity;
+    targets.forEach(cat => {
+      if (cat.id === currentCat.id) return; // Double-check to avoid self-targeting
+      const dx = cat.pos.x - currentCat.pos.x;
+      const dz = cat.pos.z - currentCat.pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      if (dist < minDist) {
+        minDist = dist;
+        target = cat;
+      }
+    });
+    
+    // Safety check - if somehow still targeting self, end turn
+    if (target.id === currentCat.id) {
+      console.error(`ERROR: ${currentCat.c.n} is targeting itself!`);
+      this.nextTurn();
+      return;
+    }
+    
+    while (actions > 0 && currentCat.v) {
+      // Re-check if target is still alive each action
+      if (!target.v) {
+        // Target died, find new target
+        const newTargets = this.turnOrder.filter(cat => cat.v && cat.id !== currentCat.id);
+        if (newTargets.length === 0) {
+          this.endCombat();
+          return;
+        }
+        target = newTargets[0]; // Just pick the first available
+      }
+      
+      const dx = target.pos.x - currentCat.pos.x;
+      const dz = target.pos.z - currentCat.pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      
+      console.log(`${currentCat.c.n}(${currentCat.id}) targeting ${target.c.n}(${target.id}): distance=${dist.toFixed(1)}, dx=${dx}, dz=${dz}`);
+      
+      if (dist <= 5 && target.v) {
+        // In range - attack
+        const map = attacks * -5;
+        const result = P.k(currentCat, target, map);
+        
+        const mapText = map < 0 ? ` (MAP ${map})` : '';
+        const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
+      const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
+        
+        if (result.h) {
+          const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
+        const dmgText = `1d6${strText} [${result.d}]`;
+          this.addEvent(`${currentCat.c.n} claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
+          if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+        } else {
+          this.addEvent(`${currentCat.c.n} claw attack${mapText}: ${rollText} MISS`);
+        }
+        attacks++;
+        actions--;
+      } else if (dist > 5) {
+        // Move closer - try multiple movement options
+        let moved = false;
+        let moveDistance = 0;
+        
+        // Try different movement directions in order of preference
+        const directions = [];
+        
+        if (Math.abs(dx) > Math.abs(dz)) {
+          // Prefer X movement, fallback to Z
+          directions.push(
+            { x: dx > 0 ? 25 : -25, z: 0 },
+            { x: dx > 0 ? 20 : -20, z: 0 },
+            { x: dx > 0 ? 15 : -15, z: 0 },
+            { x: dx > 0 ? 10 : -10, z: 0 },
+            { x: dx > 0 ? 5 : -5, z: 0 },
+            { x: 0, z: dz > 0 ? 25 : -25 },
+            { x: 0, z: dz > 0 ? 20 : -20 },
+            { x: 0, z: dz > 0 ? 15 : -15 },
+            { x: 0, z: dz > 0 ? 10 : -10 },
+            { x: 0, z: dz > 0 ? 5 : -5 }
+          );
+        } else {
+          // Prefer Z movement, fallback to X
+          directions.push(
+            { x: 0, z: dz > 0 ? 25 : -25 },
+            { x: 0, z: dz > 0 ? 20 : -20 },
+            { x: 0, z: dz > 0 ? 15 : -15 },
+            { x: 0, z: dz > 0 ? 10 : -10 },
+            { x: 0, z: dz > 0 ? 5 : -5 },
+            { x: dx > 0 ? 25 : -25, z: 0 },
+            { x: dx > 0 ? 20 : -20, z: 0 },
+            { x: dx > 0 ? 15 : -15, z: 0 },
+            { x: dx > 0 ? 10 : -10, z: 0 },
+            { x: dx > 0 ? 5 : -5, z: 0 }
+          );
+        }
+        
+        // Try each direction until one works
+        for (const dir of directions) {
+          const newX = currentCat.pos.x + dir.x;
+          const newZ = currentCat.pos.z + dir.z;
+          
+          if (!this.occupied(newX, newZ, currentCat)) {
+            currentCat.pos.x = newX;
+            currentCat.pos.z = newZ;
+            moveDistance = Math.abs(dir.x) + Math.abs(dir.z);
+            moved = true;
+            break;
+          }
+        }
+        
+        if (moved) {
+          // Update cat in scene
+          const catIndex = E.objects.findIndex(obj => (obj.type === 'cat' || obj.type === 'boss') && obj.catId === currentCat.id);
+          if (catIndex >= 0) {
+            E.objects[catIndex].x = currentCat.pos.x;
+            E.objects[catIndex].z = currentCat.pos.z;
+          }
+          actions--;
+          this.addEvent(`${currentCat.c.n} moves ${moveDistance}ft closer. ${actions} actions remaining.`);
+        } else {
+          // Can't move at all, skip action
+          actions--;
+          this.addEvent(`${currentCat.c.n} is blocked.`);
+        }
+      } else {
+        break; // No valid actions
+      }
+    }
+    
+    // Check if combat should end
+    const remaining = this.turnOrder.filter(cat => cat.v);
+    if (remaining.length <= 1) {
+      this.endCombat();
+      return;
+    }
+    
+    this.nextTurn();
+  },
+  
+  // End combat
+  endCombat() {
+    const aliveCats = this.turnOrder.filter(cat => cat.v);
+    const boss = this.turnOrder.find(cat => cat.isBoss);
+    
+    // Check victory conditions
+    if (boss && !boss.v) {
+      // Boss defeated - major victory!
+      this.addEvent(`🏆🏆🏆 ?????? DEFEATED! The alley is saved!`);
+      if (this.p.v) {
+        this.addEvent(`You are victorious!`);
+      }
+    } else if (aliveCats.length === 1) {
+      if (aliveCats[0].isBoss) {
+        this.addEvent(`💀 ?????? reigns supreme! All hope is lost...`);
+      } else {
+        this.addEvent(`🏆 ${aliveCats[0].c.n} wins the battle!`);
+      }
+    } else if (aliveCats.length === 0) {
+      this.addEvent(`💀 All cats have fallen...`);
+    }
+    
+    this.combat = null;
+    this.currentTurn = 0;
+    this.currentActions = 3;
+    this.actionType = null;
+  },
+  
+  // Render
+  render() {
+    E.render();
+    // Arrow must render after E.render() so cat positions are calculated
+    this.renderArrow();
+    this.renderUI();
+  },
+
+  // Render arrow above active cat
+  renderArrow() {
+    if (!this.combat || !this.turnOrder) {
+      console.log('Arrow: No combat or turnOrder');
+      return;
+    }
+    
+    const activeCat = this.turnOrder[this.currentTurn];
+    if (!activeCat || !activeCat.v) {
+      console.log('Arrow: No active cat or cat dead');
+      return;
+    }
+    
+    // Get screen position from global map
+    const screenTop = E.catScreenPositions[activeCat.id];
+    if (!screenTop) {
+      console.log(`Arrow: No screen position stored for ${activeCat.id}`);
+      console.log('Available positions:', Object.keys(E.catScreenPositions));
+      return;
+    }
+    
+    const ctx = E.ctx;
+    
+    // Position arrow above the actual rendered sprite
+    const arrowX = screenTop.x;
+    const arrowY = screenTop.y - 20; // 20px above sprite top
+    
+    // Draw arrow pointing down
+    ctx.fillStyle = '#ffff00';
+    ctx.beginPath();
+    ctx.moveTo(arrowX, arrowY);
+    ctx.lineTo(arrowX - 8, arrowY - 15);
+    ctx.lineTo(arrowX + 8, arrowY - 15);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Arrow outline
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  },
+  
+  // Update UI elements
+  updateUI() {
+    const stats = document.querySelector('#player-stats div');
+    if (stats && this.p) {
+      stats.innerHTML = `<strong>${this.p.c.n} Cat</strong><br>HP: ${this.p.h}/${this.p.m}<br>AC: ${this.p.a}<br>Pos: (${this.p.pos.x}, ${this.p.pos.z})`;
+    }
+    
+    const lb = document.querySelector('#leaderboard-list');
+    if (lb) {
+      const connected = this.w && this.w.readyState === 1;
+      const count = this.cs.filter(c => c.v).length + (this.p.v ? 1 : 0);
+      lb.innerHTML = connected ? `Connected: ${count} cats` : 'Connecting...';
+    }
+  },
+  
+  // Render UI
+  renderUI() {
+    this.updateUI();
+    
+    const ctx = E.ctx;
+    
+    // Combat UI - horizontal initiative bar like screenshot
+    if (this.combat) {
+      // Initiative tracker - horizontal bar in top center
+      const boxWidth = 80;
+      const boxHeight = 55; // Increased height
+      const startX = (E.w - (this.turnOrder.length * boxWidth)) / 2;
+      const startY = 10;
+      
+      this.turnOrder.forEach((cat, i) => {
+        const x = startX + i * boxWidth;
+        const active = i === this.currentTurn;
+        
+        // Box background
+        ctx.fillStyle = active ? 'rgba(255,255,0,0.8)' : 'rgba(0,0,0,0.7)';
+        ctx.fillRect(x, startY, boxWidth - 2, boxHeight);
+        
+        // Border
+        ctx.strokeStyle = active ? '#ffff00' : '#666666';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, startY, boxWidth - 2, boxHeight);
+        
+        // Text - use cat's color only for class name
+        ctx.font = '10px monospace';
+        ctx.fillStyle = active ? '#ffff00' : (cat.color === '#000000' ? '#ffffff' : cat.color); // White for black cats, yellow for active
+        ctx.fillText(cat.c.n, x + 5, startY + 15);
+        
+        // Regular white text for other info
+        ctx.fillStyle = active ? '#ffff00' : '#ffffff'; // Yellow for active cat
+        
+        // Only show HP for the player's own cat
+        if (cat === this.p) {
+          ctx.fillText(`HP: ${cat.h}/${cat.m}`, x + 5, startY + 28);
+          ctx.fillText(`Init: ${cat.i}`, x + 5, startY + 41);
+        } else {
+          // Just show initiative for other players
+          ctx.fillText(`Init: ${cat.i}`, x + 5, startY + 28);
+        }
+      });
+      
+    }
+    
+    // Bottom left panel
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(10, E.h - 100, 300, 90);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px monospace';
+    
+    if (this.combat) {
+      // Combat controls in green in bottom left
+      const currentCat = this.turnOrder[this.currentTurn];
+      if (currentCat === this.p && this.p.v) {
+        ctx.fillStyle = '#00ff00';
+        const actionsText = `Actions: ${this.currentActions}/3`;
+        ctx.fillText(actionsText, 20, E.h - 80);
+        
+        // Action dots right next to Actions text
+        const textWidth = ctx.measureText(actionsText).width;
+        for (let i = 0; i < 3; i++) {
+          ctx.fillStyle = i < this.currentActions ? '#00ff00' : '#666666';
+          ctx.beginPath();
+          ctx.arc(25 + textWidth + i * 15, E.h - 85, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        ctx.fillStyle = '#00ff00';
+        ctx.fillText(`Mode: ${this.actionType || 'None'}`, 20, E.h - 65);
+        if (this.actionType === 'move') {
+          ctx.fillText(`Movement: ${this.moveDistance}/25ft`, 20, E.h - 50);
+        }
+        ctx.fillText('M=Move, X=Attack, Space=End Turn', 20, E.h - 35);
+      } else {
+        ctx.fillStyle = '#ffff00';
+        ctx.fillText(`${currentCat.c.n}'s Turn`, 20, E.h - 80);
+        ctx.fillStyle = '#fff';
+        if (!this.p.v) {
+          ctx.fillStyle = '#ff0000';
+          ctx.fillText('You are defeated!', 20, E.h - 65);
+          ctx.fillText('Watching remaining combat...', 20, E.h - 50);
+        } else {
+          ctx.fillText('Waiting for enemy...', 20, E.h - 65);
+        }
+      }
+    } else {
+      // Regular help text
+      ctx.fillText('WASD: Move camera', 20, E.h - 80);
+      ctx.fillText('Mouse: Look around', 20, E.h - 65);
+      ctx.fillText('Scroll: Zoom', 20, E.h - 50);
+      ctx.fillText('Arrows: Move cat', 20, E.h - 35);
+      ctx.fillText('I: Isometric view', 20, E.h - 20);
+    }
+    
+    // Event log is now handled via HTML element
+  }
+};
+
+// Start
+document.addEventListener('DOMContentLoaded', () => {
+  window.G = G; // Make globally accessible for 3D engine
+  G.init();
+});
+    </script>
+</body>
+</html>
