@@ -586,20 +586,27 @@ const E = {
       }
     }
     
-    // Draw highlight square for cat's grid position (reuse calculated corners)
-    if (window.G && window.G.combat) {
-      this.ctx.strokeStyle = isDefeated ? 'rgba(100,100,100,0.3)' : 'rgba(255,255,100,0.3)';
-      this.ctx.lineWidth = 2;
+    // Draw highlight square for active player's grid position only
+    if (window.G && window.G.combat && window.G.turnOrder) {
+      const activeCat = window.G.turnOrder[window.G.currentTurn];
+      const isActiveCat = obj.catId === activeCat.id;
       
-      // Use the same corners we calculated for centering
-      if (corners.every(c => c)) {
-        this.ctx.beginPath();
-        this.ctx.moveTo(corners[0].x, corners[0].y);
-        this.ctx.lineTo(corners[1].x, corners[1].y);
-        this.ctx.lineTo(corners[2].x, corners[2].y);
-        this.ctx.lineTo(corners[3].x, corners[3].y);
-        this.ctx.closePath();
-        this.ctx.stroke();
+      if (isActiveCat) {
+        this.ctx.strokeStyle = isDefeated ? 'rgba(100,100,100,0.8)' : 'rgba(255,255,0,0.8)';
+        this.ctx.lineWidth = 3;
+        
+        // Fill the square with a subtle glow
+        this.ctx.fillStyle = isDefeated ? 'rgba(100,100,100,0.1)' : 'rgba(255,255,0,0.1)';
+        if (corners.every(c => c)) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(corners[0].x, corners[0].y);
+          this.ctx.lineTo(corners[1].x, corners[1].y);
+          this.ctx.lineTo(corners[2].x, corners[2].y);
+          this.ctx.lineTo(corners[3].x, corners[3].y);
+          this.ctx.closePath();
+          this.ctx.fill();
+          this.ctx.stroke();
+        }
       }
     }
     

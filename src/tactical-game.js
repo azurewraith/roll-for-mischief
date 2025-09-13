@@ -1,6 +1,6 @@
 // Tactical cat battle royale with full 3D movement
 let G = {
-  s: 'playing',
+  s: 'splash', // 'splash', 'menu', 'playing', 'combat'
   p: null,
   cs: [],
   t: 0,
@@ -23,79 +23,42 @@ let G = {
   moveDistance: 0, // Track movement used this turn
   eventLog: [],
   targetDialog: null, // Target selection state
+  healDialog: false, // Healing spell selection
+  showStatBlock: false, // T key toggle for stat display
+  
+  // Menu state
+  menuSelection: 0, // 0 = Start Game, 1 = Join Game
+  roomCode: '', // 4-letter room code
+  gameMode: null, // 'host' or 'join'
+  connectedPlayers: 0, // Number of connected players
+  ws: null, // WebSocket connection
   
   // Initialize
   init() {
+    console.log('INIT CALLED');
+    
+    // Wait for DOM to be ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => this.initAfterDOM());
+    } else {
+      this.initAfterDOM();
+    }
+  },
+  
+  initAfterDOM() {
+    console.log('INIT AFTER DOM CALLED');
     const canvas = document.querySelector('canvas');
+    console.log('CANVAS FOUND:', canvas);
+    
     E.init(canvas);
+    
+    // Initialize city/grid for menu background
+    this.generateCity();
     
     // Cat colors for differentiation (work better with orange base)
     this.catColors = ['#ffaa00', '#ff2222', '#88ff88', '#ffffff', '#ff44ff', '#ffff44', '#44ffff'];
     
-    // Generate player
-    this.p = P.g('You');
-    this.p.id = 'player';
-    this.p.pos = { x: 0, y: 0, z: 0 };
-    this.p.color = this.catColors[0]; // Player gets first color
-    this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
-    
-    // Generate 3D city
-    this.generateCity();
-    
-    // Add player to scene
-    E.add('cat', this.p.pos.x, this.p.pos.y, this.p.pos.z, 3, 5, 3, this.p.color);
-    // Set catId on the player's object
-    const playerObj = E.objects[E.objects.length - 1];
-    playerObj.catId = this.p.id;
-    
-    // Add BOSS CAT - 10ft x 10ft black cat
-    const boss = P.g('??????');
-    boss.id = 'boss';
-    boss.n = '??????';
-    // Create copy of class to avoid corrupting shared reference
-    boss.c = { ...boss.c, n: '??????' };
-    boss.isBoss = true;
-    // Make boss overpowered
-    boss.h = boss.m = 100; // 100 HP
-    boss.a = 15; // High AC
-    boss.c.a = 8; // High attack bonus
-    boss.s = { S: 20, D: 14, C: 20, I: 10, W: 10, H: 10 }; // Strong stats
-    boss.color = '#000000'; // Black
-    boss.pos = { x: 0, y: 0, z: 30 }; // Center-back position
-    this.cs.push(boss);
-    const bossObj = { type: 'boss', x: boss.pos.x, y: boss.pos.y, z: boss.pos.z, w: 10, h: 10, d: 10, color: boss.color, catId: boss.id };
-    E.objects.push(bossObj);
-    
-    // Add 2-3 regular cats for testing - grid snapped positions
-    const usedPositions = new Set(['0,0', '0,30']); // Player at origin, boss at 0,30
-    for (let i = 0; i < 3; i++) {
-      const enemy = P.g(`Cat${i+1}`);
-      enemy.id = `enemy_${i}`;
-      enemy.color = this.catColors[i + 1]; // Each enemy gets different color
-      
-      // Find available grid position
-      let x, z, posKey;
-      do {
-        x = (Math.floor(Math.random() * 12) - 6) * 5; // -30 to +30 in 5ft increments
-        z = (Math.floor(Math.random() * 12) - 6) * 5;
-        posKey = `${x},${z}`;
-      } while (usedPositions.has(posKey));
-      
-      usedPositions.add(posKey);
-      enemy.pos = { x, y: 0, z };
-      this.cs.push(enemy);
-      const catObj = { type: 'cat', x: enemy.pos.x, y: enemy.pos.y, z: enemy.pos.z, w: 3, h: 5, d: 3, color: enemy.color, catId: enemy.id };
-      E.objects.push(catObj);
-    }
-    
-    // Position camera behind and above cat for proper view
-    E.cam.x = this.p.pos.x;
-    E.cam.y = 25;  
-    E.cam.z = this.p.pos.z - 25;  // Further back behind cat
-    E.cam.rx = -0.3;  // Looking down at cat
-    E.cam.ry = 0;
-    
-    // Camera controls
+    // Camera controls - set up once
     canvas.addEventListener('mousedown', e => {
       if (e.button === 0) {  // Left click
         this.mouseDrag = true;
@@ -134,6 +97,178 @@ let G = {
           const strafeX = dx * cos * moveSpeed;
           const strafeZ = dx * sin * moveSpeed;
           
+          // Vertical drag = move forward/back relative to camera
+          const forwardX = -dy * sin * moveSpeed;
+          const forwardZ = dy * cos * moveSpeed;
+          
+          E.moveCamera(strafeX + forwardX, 0, strafeZ + forwardZ);
+        }
+        
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+      }
+    });
+    
+    // Set up keyboard controls now that DOM is ready
+    this.setupKeyboardControls();
+    
+    // Hide UI elements initially (in splash state)
+    this.updateUI();
+    
+    // Start animation loop
+    this.loop();
+  },
+  
+  spawnCats() {
+    // Clear any existing objects
+    E.objects = [];
+    this.cs = [];
+    
+    // Only generate player if not already created (for non-multiplayer or if missing)
+    if (!this.p) {
+      this.p = P.g('You');
+      this.p.id = this.id; // Use the unique session ID
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 4 + Math.floor(Math.random() * 7); // 4-10 grid units from center
+      const rawX = Math.cos(angle) * distance * 5; // 5-unit grid
+      const rawZ = Math.sin(angle) * distance * 5;
+      this.p.pos = { 
+        x: Math.round(rawX / 5) * 5, // Snap to 5-unit grid
+        y: 0, 
+        z: Math.round(rawZ / 5) * 5 
+      };
+      this.p.color = this.catColors[0]; // Player gets first color
+    }
+    this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
+    
+    // Add player to scene
+    E.add('cat', this.p.pos.x, this.p.pos.y, this.p.pos.z, 3, 5, 3, this.p.color);
+    // Set catId on the player's object
+    const playerObj = E.objects[E.objects.length - 1];
+    playerObj.catId = this.p.id;
+    
+    // Add BOSS CAT - 10ft x 10ft black cat
+    const boss = P.g('??????');
+    boss.id = 'boss';
+    boss.n = '??????';
+    // Create copy of class to avoid corrupting shared reference
+    boss.c = { ...boss.c, n: '??????' };
+    boss.isBoss = true;
+    // Make boss challenging but balanced
+    boss.h = boss.m = 60; // 60 HP (reduced from 100)
+    boss.a = 16; // High but not impossible AC
+    boss.c.a = 3; // Moderate attack bonus
+    boss.s = { S: 16, D: 14, C: 16, I: 10, W: 12, H: 8 }; // Strong but balanced stats
+    boss.color = '#000000'; // Black
+    boss.pos = { x: 0, y: 0, z: 30 }; // Center-back position
+    this.cs.push(boss);
+    const bossObj = { type: 'boss', x: boss.pos.x, y: boss.pos.y, z: boss.pos.z, w: 10, h: 10, d: 10, color: boss.color, catId: boss.id };
+    E.objects.push(bossObj);
+    
+    // Add any joined players to the cats array
+    if (this.joinedPlayers) {
+      this.joinedPlayers.forEach(joinedPlayer => {
+        this.cs.push(joinedPlayer);
+        E.add('cat', joinedPlayer.pos.x, joinedPlayer.pos.y, joinedPlayer.pos.z, 3, 5, 3, joinedPlayer.color);
+        E.objects[E.objects.length - 1].catId = joinedPlayer.id;
+      });
+    }
+
+    // Fill remaining slots with AI cats up to 6 total players (not counting boss)
+    const totalPlayers = 6;
+    const aiCatsNeeded = totalPlayers - this.connectedPlayers;
+    const usedPositions = new Set(['0,0', '0,30']); // Player at origin, boss at 0,30
+    
+    // Mark joined player positions as used
+    if (this.joinedPlayers) {
+      this.joinedPlayers.forEach(p => {
+        usedPositions.add(`${p.pos.x},${p.pos.z}`);
+      });
+    }
+    
+    for (let i = 0; i < aiCatsNeeded; i++) {
+      const aiCat = P.g(`AI Cat ${i+1}`);
+      aiCat.id = `ai_${i}`;
+      aiCat.isAI = true; // Mark as AI for turn behavior
+      aiCat.color = this.catColors[i + 1]; // Each AI gets different color
+      
+      // Find available grid position
+      let x, z, posKey;
+      do {
+        x = (Math.floor(Math.random() * 12) - 6) * 5; // -30 to +30 in 5ft increments
+        z = (Math.floor(Math.random() * 12) - 6) * 5;
+        posKey = `${x},${z}`;
+      } while (usedPositions.has(posKey));
+      
+      usedPositions.add(posKey);
+      aiCat.pos = { x, y: 0, z };
+      this.cs.push(aiCat);
+      const catObj = { type: 'cat', x: aiCat.pos.x, y: aiCat.pos.y, z: aiCat.pos.z, w: 3, h: 5, d: 3, color: aiCat.color, catId: aiCat.id };
+      E.objects.push(catObj);
+    }
+    
+    // Add player to cats array
+    this.cs.unshift(this.p);
+    
+    // Debug: Log final cat breakdown
+    console.log('=== FINAL CAT BREAKDOWN ===');
+    console.log('Total cats:', this.cs.length);
+    console.log('Connected players:', this.connectedPlayers);
+    console.log('AI cats needed:', 6 - this.connectedPlayers);
+    console.log('Cats by type:');
+    this.cs.forEach((c, i) => {
+      const type = c.isBoss ? 'BOSS' : (c.isAI ? 'AI' : 'PLAYER');
+      console.log(`  ${i}: ${type} - ${c.c.n}(${c.id})`);
+    });
+    console.log('===========================');
+    
+    // Position camera behind and above cat for proper view
+    E.cam.x = this.p.pos.x;
+    E.cam.y = 25;  
+    E.cam.z = this.p.pos.z + 25;  // Behind cat (positive Z)
+    E.cam.rx = -0.3;  // Looking down at cat
+    E.cam.ry = Math.PI;  // Face towards cat
+    
+    // Camera controls - use E.canvas
+    if (E.canvas && !this.cameraControlsSetup) {
+      this.cameraControlsSetup = true; // Prevent duplicate listeners
+      E.canvas.addEventListener('mousedown', e => {
+        if (e.button === 0) {  // Left click
+          this.mouseDrag = true;
+        } else if (e.button === 2) {  // Right click
+          this.rightMouseDrag = true;
+          e.preventDefault();
+        }
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+      });
+    
+      E.canvas.addEventListener('mouseup', () => {
+        this.mouseDrag = false;
+        this.rightMouseDrag = false;
+      });
+      
+      E.canvas.addEventListener('contextmenu', e => {
+        e.preventDefault(); // Disable right-click menu
+      });
+      
+      E.canvas.addEventListener('mousemove', e => {
+        if (this.mouseDrag || this.rightMouseDrag) {
+          const dx = e.clientX - this.lastMouse.x;
+        const dy = e.clientY - this.lastMouse.y;
+        
+        if (this.mouseDrag) {
+          // Left drag: rotate camera
+          E.rotateCamera(-dy * 0.01, dx * 0.01);
+        } else if (this.rightMouseDrag) {
+          // Right drag: move camera relative to rotation
+          const moveSpeed = 0.5;
+          const camYaw = E.cam.ry;
+          const cos = Math.cos(camYaw);
+          const sin = Math.sin(camYaw);
+          
+          // Horizontal drag = strafe left/right relative to camera
+          const strafeX = dx * cos * moveSpeed;
+          const strafeZ = dx * sin * moveSpeed;
+          
           // Vertical drag = move up/down (global Y)
           E.moveCamera(strafeX, -dy * moveSpeed, strafeZ);
         }
@@ -142,45 +277,87 @@ let G = {
       }
     });
     
-    canvas.addEventListener('wheel', e => {
-      const factor = e.deltaY > 0 ? 1.1 : 0.9;
-      E.zoomCamera(factor);
-      e.preventDefault();
-    });
+      E.canvas.addEventListener('wheel', e => {
+        const factor = e.deltaY > 0 ? 1.1 : 0.9;
+        E.zoomCamera(factor);
+        e.preventDefault();
+      });
+    }
     
-    // Keyboard controls
-    document.addEventListener('keydown', e => {
+  },
+  
+  setupKeyboardControls() {
+    console.log('SETTING UP KEYBOARD CONTROLS');
+    
+    // Complete keyboard handler
+    document.addEventListener('keydown', (e) => {
+      console.log('KEY:', e.key, e.code, 'STATE:', this.s);
       this.k.add(e.code);
       
+      if (e.code === 'Space' || e.key === ' ') {
+        console.log('SPACE DETECTED IN STATE:', this.s);
+        e.preventDefault();
+        if (this.s === 'splash') {
+          this.s = 'menu';
+          console.log('CHANGED STATE TO MENU');
+        } else if (this.combat) {
+          if (this.gameMode === 'host') {
+            this.nextTurn();
+          } else {
+            this.send('end_turn', {});
+          }
+        }
+      }
+      
+      // Menu navigation
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') {
+        this.menuUp();
+      }
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        this.menuDown();
+      }
+      if (e.code === 'Enter') {
+        this.menuSelect();
+      }
+      
+      // Game controls
       if (e.code === 'KeyI') E.setIsometric();
-      if (e.code === 'Space') this.interact();
-      if (e.code === 'KeyM') this.setAction('move');
-      if (e.code === 'KeyX') this.setAction('attack');
+      
+      // Only allow action commands if it's the player's turn
+      const isMyTurn = this.combat && this.turnOrder && this.turnOrder[this.currentTurn]?.id === this.p?.id;
+      if (isMyTurn) {
+        if (e.code === 'KeyM') this.setAction('move');
+        if (e.code === 'KeyX') this.setAction('attack');
+        if (e.code === 'KeyC') this.setAction('cast');
+        if (e.code === 'KeyH') this.setAction('heal');
+        if (e.code === 'KeyZ') this.setAction('stealth');
+      }
+      if (e.code === 'KeyT') this.showStatBlock = !this.showStatBlock;
       if (e.code === 'Escape') this.endAction();
       
-      // Number keys for target selection
-      if (this.targetDialog && e.code.startsWith('Digit')) {
-        const num = parseInt(e.code.slice(5));
-        if (num >= 1 && num <= 9) this.selectTarget(num);
+      // Target selection with digit keys
+      if (this.targetDialog) {
+        if (e.code === 'Digit1') this.selectTarget(1);
+        if (e.code === 'Digit2') this.selectTarget(2);
+        if (e.code === 'Digit3') this.selectTarget(3);
+        if (e.code === 'Digit4') this.selectTarget(4);
+        if (e.code === 'Digit5') this.selectTarget(5);
+        if (e.code === 'Digit6') this.selectTarget(6);
+      }
+      
+      // Heal selection with digit keys
+      if (this.healDialog) {
+        if (e.code === 'Digit1') this.executeHeal(1);
+        if (e.code === 'Digit2') this.executeHeal(2);
+        if (e.code === 'Digit3') this.executeHeal(3);
       }
     });
-    document.addEventListener('keyup', e => this.k.delete(e.code));
     
-    // Connect multiplayer
-    this.connect();
+    document.addEventListener('keyup', (e) => {
+      this.k.delete(e.code);
+    });
     
-    // Update UI
-    this.updateUI();
-    
-    // Start combat immediately for testing  
-    this.startCombat([this.p, ...this.cs]);
-    
-    // Ensure camera follows player after combat start
-    E.cam.x = this.p.pos.x;
-    E.cam.z = this.p.pos.z - 25;
-    
-    // Start loop
-    this.loop();
+    console.log('KEYBOARD SETUP COMPLETE');
   },
   
   // Connect to multiplayer
@@ -232,45 +409,76 @@ let G = {
   },
   
   // Generate 3D city with proper streets
-  generateCity() {
-    // Street width = 20ft (4 tiles)
-    // Buildings are 30x30ft on average
+  generateCity(forGame = false, buildingData = null) {
+    console.log('generateCity called:', { forGame, hasBuildingData: !!buildingData, state: this.s });
     
-    for (let bx = -5; bx <= 5; bx++) {
-      for (let bz = -5; bz <= 5; bz++) {
-        // Building block position
-        const blockX = bx * 60; // 30ft building + 30ft space
-        const blockZ = bz * 60;
-        
-        // Skip center for spawn
-        if (Math.abs(bx) <= 1 && Math.abs(bz) <= 1) continue;
-        
-        // Building dimensions
-        const w = 25 + Math.random() * 10; // 25-35ft
-        const h = 15 + Math.random() * 50; // 15-65ft tall
-        const d = 25 + Math.random() * 10;
-        
-        // Building color variants
-        const colors = ['#4a4a6a', '#5a5a7a', '#6a5a7a', '#5a6a7a'];
-        const color = colors[Math.floor(Math.random() * colors.length)];
-        
-        E.add('building', blockX - w/2, 0, blockZ - d/2, w, h, d, color);
+    // Only generate buildings when explicitly requested or in playing state
+    if (forGame) {
+      console.log('BUILDING GENERATION STARTING');
+      
+      if (buildingData) {
+        console.log('Using provided building data:', buildingData.length);
+        // Use provided building data (for clients)
+        buildingData.forEach(b => {
+          E.add('building', b.x, b.y, b.z, b.w, b.h, b.d, b.color);
+        });
+        return;
       }
-    }
-    
-    // Add some smaller buildings between blocks
-    for (let i = 0; i < 20; i++) {
-      const x = (Math.random() - 0.5) * 400;
-      const z = (Math.random() - 0.5) * 400;
       
-      // Don't place too close to center
-      if (Math.abs(x) < 50 && Math.abs(z) < 50) continue;
+      console.log('Generating new buildings for host');
+      // Street width = 20ft (4 tiles)
+      // Buildings are 30x30ft on average
       
-      const w = 10 + Math.random() * 15;
-      const h = 8 + Math.random() * 25;
-      const d = 10 + Math.random() * 15;
+      for (let bx = -5; bx <= 5; bx++) {
+        for (let bz = -5; bz <= 5; bz++) {
+          // Building block position
+          const blockX = bx * 60; // 30ft building + 30ft space
+          const blockZ = bz * 60;
+          
+          // Skip center for spawn
+          if (Math.abs(bx) <= 1 && Math.abs(bz) <= 1) continue;
+          
+          // Building dimensions
+          const w = 25 + Math.random() * 10; // 25-35ft
+          const h = 15 + Math.random() * 50; // 15-65ft tall
+          const d = 25 + Math.random() * 10;
+          
+          // Building color variants
+          const colors = ['#4a4a6a', '#5a5a7a', '#6a5a7a', '#5a6a7a'];
+          const color = colors[Math.floor(Math.random() * colors.length)];
+          
+          const x = blockX - w/2, y = 0, z = blockZ - d/2;
+          console.log('Adding building:', { x, y, z, w, h, d, color });
+          E.add('building', x, y, z, w, h, d, color);
+          
+          // Store building data for syncing
+          if (this.buildings) {
+            this.buildings.push({ x, y, z, w, h, d, color });
+            console.log('Stored building, total:', this.buildings.length);
+          }
+        }
+      }
       
-      E.add('building', x, 0, z, w, h, d, '#3a3a5a');
+      // Add some smaller buildings between blocks
+      for (let i = 0; i < 20; i++) {
+        const x = (Math.random() - 0.5) * 400;
+        const z = (Math.random() - 0.5) * 400;
+        
+        // Don't place too close to center
+        if (Math.abs(x) < 50 && Math.abs(z) < 50) continue;
+        
+        const w = 10 + Math.random() * 15;
+        const h = 8 + Math.random() * 25;
+        const d = 10 + Math.random() * 15;
+        
+        const y = 0, color = '#3a3a5a';
+        E.add('building', x, y, z, w, h, d, color);
+        
+        // Store building data for syncing
+        if (this.buildings) {
+          this.buildings.push({ x, y, z, w, h, d, color });
+        }
+      }
     }
   },
   
@@ -283,8 +491,11 @@ let G = {
   
   // Update
   update() {
-    this.updateCamera();
-    this.updatePlayer();
+    // Only update game world when actually playing and player exists
+    if (this.s === 'playing' && this.p) {
+      this.updateCamera();
+      this.updatePlayer();
+    }
   },
   
   // Update camera movement
@@ -320,7 +531,7 @@ let G = {
   // Check if position is occupied by a cat
   occupied(x, z, e = null) {
     // Check player position
-    if (this.p !== e && this.p.pos.x === x && this.p.pos.z === z) return 1;
+    if (this.p && this.p !== e && this.p.pos.x === x && this.p.pos.z === z) return 1;
     
     // Check all cats
     return this.cs.some(c => {
@@ -343,41 +554,77 @@ let G = {
   
   // Update player
   updatePlayer() {
+    if (!this.p || !this.p.pos) return; // Wait for player and position to be initialized
+    
     const moveDelay = 300; // Turn-based feel
     const now = Date.now();
     
     if (this.combat) {
       // In combat, only current player can move and must have actions/move selected
-      if (this.turnOrder[this.currentTurn] !== this.p) return;
+      if (this.turnOrder[this.currentTurn]?.id !== this.p.id) return;
       if (this.actionType !== 'move' || this.currentActions <= 0) return;
       if (this.moveDistance >= 25) return; // Max 25ft movement per turn
     }
     
     if (!this.lastMove || now - this.lastMove > moveDelay) {
-      let moved = false;
-      const gridSize = 5; // 5ft squares
-      let newX = this.p.pos.x;
-      let newZ = this.p.pos.z;
+      let moved = false; // Define moved outside both branches
       
-      // Calculate new position based on input
-      if (this.k.has('ArrowUp')) {
-        newZ += gridSize;  // South (reversed)
-      }
-      if (this.k.has('ArrowDown')) {
-        newZ -= gridSize;  // North (reversed)
-      }
-      if (this.k.has('ArrowLeft')) {
-        newX -= gridSize;  // West
-      }
-      if (this.k.has('ArrowRight')) {
-        newX += gridSize;  // East
-      }
-      
-      // Only move if the new position is not occupied
-      if ((newX !== this.p.pos.x || newZ !== this.p.pos.z) && !this.occupied(newX, newZ, this.p)) {
-        this.p.pos.x = newX;
-        this.p.pos.z = newZ;
-        moved = true;
+      if (this.gameMode === 'host') {
+        // Host processes movement locally
+        const gridSize = 5; // 5ft squares
+        let newX = this.p.pos.x;
+        let newZ = this.p.pos.z;
+        
+        // Calculate new position based on input
+        if (this.k.has('ArrowUp')) {
+          newZ -= gridSize;  // North
+        }
+        if (this.k.has('ArrowDown')) {
+          newZ += gridSize;  // South
+        }
+        if (this.k.has('ArrowLeft')) {
+          newX -= gridSize;  // West
+        }
+        if (this.k.has('ArrowRight')) {
+          newX += gridSize;  // East
+        }
+        
+        // Only move if the new position is not occupied
+        if ((newX !== this.p.pos.x || newZ !== this.p.pos.z) && !this.occupied(newX, newZ, this.p)) {
+          this.p.pos.x = newX;
+          this.p.pos.z = newZ;
+          moved = true;
+        }
+      } else {
+        // Client sends movement request to host
+        const gridSize = 5;
+        let newX = this.p.pos.x;
+        let newZ = this.p.pos.z;
+        let requestMove = false;
+        
+        // Calculate desired position
+        if (this.k.has('ArrowUp')) {
+          newZ -= gridSize;
+          requestMove = true;
+        }
+        if (this.k.has('ArrowDown')) {
+          newZ += gridSize;
+          requestMove = true;
+        }
+        if (this.k.has('ArrowLeft')) {
+          newX -= gridSize;
+          requestMove = true;
+        }
+        if (this.k.has('ArrowRight')) {
+          newX += gridSize;
+          requestMove = true;
+        }
+        
+        if (requestMove && (newX !== this.p.pos.x || newZ !== this.p.pos.z)) {
+          this.send('player_move', { targetX: newX, targetZ: newZ, playerId: this.p.id });
+          this.lastMove = now; // Prevent spam
+        }
+        return; // Don't process locally
       }
       
       if (moved) {
@@ -473,17 +720,566 @@ let G = {
     E.cam.rx = -0.3;
   },
   
-  // Handle interactions
-  interact() {
-    if (this.combat) {
+  // Handle space key
+  handleSpace() {
+    if (this.s === 'splash') {
+      this.s = 'menu';
+    } else if (this.combat) {
       this.nextTurn();
     }
   },
   
+  // Menu navigation
+  menuUp() {
+    if (this.s === 'menu') {
+      this.menuSelection = Math.max(0, this.menuSelection - 1);
+    } else if (this.s === 'lobby' && this.gameMode === 'host') {
+      this.menuSelection = Math.max(0, this.menuSelection - 1);
+    }
+  },
+  
+  menuDown() {
+    if (this.s === 'menu') {
+      this.menuSelection = Math.min(1, this.menuSelection + 1);
+    } else if (this.s === 'lobby' && this.gameMode === 'host') {
+      this.menuSelection = Math.min(2, this.menuSelection + 1);
+    }
+  },
+  
+  menuSelect() {
+    if (this.s === 'menu') {
+      if (this.menuSelection === 0) {
+        this.startGame();
+      } else {
+        this.joinGame();
+      }
+    } else if (this.s === 'lobby') {
+      if (this.gameMode === 'host') {
+        if (this.menuSelection === 0) {
+          // Start with current players
+          console.log('Host starting game, sending game_start message');
+          this.send('game_start', { roomCode: this.roomCode });
+          this.s = 'playing';
+          this.initGame();
+          // Send full game state after initialization
+          setTimeout(() => {
+            console.log('Host sending game state');
+            this.syncGameState();
+          }, 500);
+        } else if (this.menuSelection === 1) {
+          // Start solo
+          this.connectedPlayers = 1;
+          this.s = 'playing';
+          this.initGame();
+        } else {
+          // Back to menu
+          this.s = 'menu';
+          this.menuSelection = 0;
+        }
+      } else {
+        // Joined player - only back to menu option
+        this.s = 'menu';
+        this.menuSelection = 0;
+      }
+    }
+  },
+  
+  startGame() {
+    this.gameMode = 'host';
+    this.roomCode = this.generateRoomCode();
+    console.log('Starting game with room code:', this.roomCode);
+    this.s = 'lobby';
+    this.connectToLobby();
+  },
+  
+  joinGame() {
+    this.gameMode = 'join';
+    const code = prompt('Enter 4-letter room code:');
+    if (code && code.length === 4) {
+      this.roomCode = code.toUpperCase();
+      console.log('Joining game with room code:', this.roomCode);
+      this.s = 'lobby';
+      this.connectToJoinLobby();
+    }
+  },
+
+  connectToJoinLobby() {
+    try {
+      this.connectedPlayers = 0; // Will be updated when we join
+      this.ws = new WebSocket('wss://relay.js13kgames.com/roll-for-mischief');
+      this.ws.onopen = () => {
+        // Generate client's player character
+        this.generateClientPlayer();
+        this.send('join_room', { id: this.id, playerData: this.p });
+        console.log('Joining lobby as player:', this.roomCode);
+        // Request current room state after a brief delay
+        setTimeout(() => {
+          this.send('request_room_state', { id: this.id });
+        }, 100);
+      };
+      this.ws.onmessage = e => {
+        // Skip non-JSON messages (relay server sends @ and + prefixed messages)
+        if (typeof e.data === 'string' && (e.data.startsWith('@') || e.data.startsWith('+'))) {
+          return;
+        }
+        try {
+          const msg = JSON.parse(e.data);
+          this.handleLobbyMessage(msg);
+        } catch (err) {
+          console.error('WebSocket message error:', err);
+        }
+      };
+      this.ws.onclose = () => console.log('WebSocket closed');
+      this.ws.onerror = err => console.error('WebSocket error:', err);
+    } catch (err) {
+      console.error('WebSocket connection failed:', err);
+      this.connectedPlayers = 1; // Fallback to offline mode
+    }
+  },
+  
+  connectToLobby() {
+    try {
+      // Generate host's player character  
+      this.generateClientPlayer();
+      this.connectedPlayers = 1; // Host starts with 1
+      this.ws = new WebSocket('wss://relay.js13kgames.com/roll-for-mischief');
+      this.ws.onopen = () => {
+        this.send('create_room', { roomCode: this.roomCode, id: this.id, host: true });
+        console.log('Connected to lobby as host:', this.roomCode);
+      };
+      this.ws.onmessage = e => {
+        // Skip non-JSON messages (relay server sends @ and + prefixed messages)
+        if (typeof e.data === 'string' && (e.data.startsWith('@') || e.data.startsWith('+'))) {
+          return;
+        }
+        try {
+          const msg = JSON.parse(e.data);
+          this.handleLobbyMessage(msg);
+        } catch (err) {
+          console.error('WebSocket message error:', err);
+        }
+      };
+      this.ws.onclose = () => console.log('WebSocket closed');
+      this.ws.onerror = err => console.error('WebSocket error:', err);
+    } catch (err) {
+      console.error('WebSocket connection failed:', err);
+      this.connectedPlayers = 1; // Fallback to offline mode
+    }
+  },
+
+  send(type, data) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      // Send to relay - it will broadcast to other clients
+      const message = JSON.stringify({ type, ...data, room: this.roomCode });
+      this.ws.send(message);
+      console.log('Sending:', message);
+    }
+  },
+
+  handleLobbyMessage(msg) {
+    console.log('Lobby message received:', msg);
+    
+    // TEMPORARILY REMOVE ROOM FILTERING TO DEBUG
+    // if (msg.room !== this.roomCode && msg.roomCode !== this.roomCode) {
+    //   return;
+    // }
+    
+    if (msg.type === 'create_room' && msg.host && msg.id !== this.id) {
+      // Someone else created this room - shouldn't happen
+      return;
+    }
+    
+    if (msg.type === 'join_room' && msg.id !== this.id) {
+      // Another player joined our room
+      if (this.gameMode === 'host') {
+        this.connectedPlayers++;
+        // Store the joining player's character data
+        if (msg.playerData && msg.playerData.id !== this.id) {
+          if (!this.joinedPlayers) this.joinedPlayers = [];
+          this.joinedPlayers.push(msg.playerData);
+        }
+        // Host broadcasts updated count to all
+        this.send('room_update', { playerCount: this.connectedPlayers });
+      }
+    } else if (msg.type === 'room_update') {
+      // Update from host about room state
+      if (msg.playerCount !== undefined) {
+        this.connectedPlayers = msg.playerCount;
+      }
+    } else if (msg.type === 'request_room_state') {
+      // Someone is requesting room state - host responds
+      if (this.gameMode === 'host') {
+        this.send('room_update', { playerCount: this.connectedPlayers });
+      }
+    } else if (msg.type === 'game_start') {
+      // Host started the game - clients wait for game_state
+      console.log('Client received game_start message');
+      if (this.gameMode !== 'host') {
+        console.log('Client transitioning to playing state');
+        this.s = 'playing';
+        // Don't generate anything - wait for complete game_state from host
+      }
+    } else if (msg.type === 'game_state') {
+      // Receive full game state from host
+      this.receiveGameState(msg);
+    } else if (msg.type === 'turn_update') {
+      // Receive turn state update
+      this.receiveTurnUpdate(msg);
+    } else if (msg.type === 'player_attack' && this.gameMode === 'host') {
+      // Client is requesting to attack - process on host
+      this.handleClientAttack(msg);
+    } else if (msg.type === 'end_turn' && this.gameMode === 'host') {
+      // Client is requesting to end turn - process on host
+      this.nextTurn();
+    } else if (msg.type === 'player_move' && this.gameMode === 'host') {
+      // Client is requesting to move - process on host
+      this.handleClientMove(msg);
+    } else if (msg.type === 'event_broadcast') {
+      // Client receives event from host - add directly to avoid prompt filtering
+      this.eventLog.unshift(msg.text);
+      if (this.eventLog.length > 8) this.eventLog.pop();
+      
+      // Update HTML event log directly
+      const eventList = document.querySelector('#event-list');
+      if (eventList) {
+        const eventDiv = document.createElement('div');
+        eventDiv.style.color = '#00ff00';
+        eventDiv.style.marginBottom = '2px';
+        eventDiv.textContent = msg.text;
+        eventList.insertBefore(eventDiv, eventList.firstChild);
+        
+        while (eventList.children.length > 8) {
+          eventList.removeChild(eventList.lastChild);
+        }
+      }
+    }
+  },
+
+  // Generate client player (clients only)
+  generateClientPlayer() {
+    // Add player-specific entropy to randomization
+    const idHash = this.id.split('').reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) & 0xffffffff, 0);
+    const entropy = Math.abs(idHash) / 0xffffffff;
+    
+    // Add small delay based on ID to offset random timing
+    Math.random(); // Consume one random for entropy offset
+    for (let i = 0; i < (Math.abs(idHash) % 10); i++) {
+      Math.random(); // Advance random state by different amounts per player
+    }
+    
+    this.p = P.g('You');
+    this.p.id = this.id; // Use unique session ID
+    
+    // Use ID-based angle to ensure different positions
+    const angle = (entropy * Math.PI * 2) + Math.random() * Math.PI * 0.5;
+    const distance = 4 + Math.floor(Math.random() * 7);
+    const rawX = Math.cos(angle) * distance * 5;
+    const rawZ = Math.sin(angle) * distance * 5;
+    this.p.pos = { 
+      x: Math.round(rawX / 5) * 5, 
+      y: 0, 
+      z: Math.round(rawZ / 5) * 5 
+    };
+    
+    // Assign client a unique color based on ID hash
+    const colorIndex = 1 + (Math.abs(idHash) % (this.catColors.length - 1));
+    this.p.color = this.catColors[colorIndex];
+  },
+
+  // Handle client attack request (host only)
+  handleClientAttack(msg) {
+    // Find the attacking player and target
+    const attackerId = msg.id || msg.playerId; // Message should include client's player ID
+    const attacker = this.turnOrder.find(c => c.id === attackerId);
+    const target = this.turnOrder.find(c => c.id === msg.targetId);
+    
+    if (!attacker || !target) {
+      console.error('Invalid attack request:', { attackerId, targetId: msg.targetId });
+      return;
+    }
+    
+    // Process the attack
+    const map = (attacker.attackCount || 0) * -5; // Multiple Attack Penalty
+    const result = P.k(attacker, target, map);
+    
+    // Update attacker state
+    attacker.attackCount = (attacker.attackCount || 0) + 1;
+    this.currentActions--;
+    
+    // Add event log
+    const mapText = map < 0 ? ` (MAP ${map})` : '';
+    const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
+    const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
+    
+    if (result.h) {
+      const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
+      const dmgText = `1d6${strText} [${result.d}]`;
+      this.addEvent(`${attacker.c.n} claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
+      if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+    } else {
+      this.addEvent(`${attacker.c.n} claw attack${mapText}: ${rollText} MISS`);
+    }
+    
+    // Sync the updated game state to all clients
+    this.syncGameState();
+  },
+
+  // Handle client move request (host only)
+  handleClientMove(msg) {
+    // Find the moving player
+    const playerId = msg.playerId;
+    const player = this.turnOrder.find(c => c.id === playerId);
+    
+    if (!player) {
+      console.error('Invalid move request - player not found:', playerId);
+      return;
+    }
+    
+    // Check if move is valid
+    const newX = msg.targetX;
+    const newZ = msg.targetZ;
+    
+    if (!this.occupied(newX, newZ, player)) {
+      // Move is valid - update position
+      player.pos.x = newX;
+      player.pos.z = newZ;
+      
+      // Update visual object
+      const catIndex = E.objects.findIndex(obj => (obj.type === 'cat' || obj.type === 'boss') && obj.catId === player.id);
+      if (catIndex >= 0) {
+        E.objects[catIndex].x = newX;
+        E.objects[catIndex].z = newZ;
+      }
+      
+      // Track movement for combat
+      if (this.combat && this.currentTurn < this.turnOrder.length) {
+        const currentPlayer = this.turnOrder[this.currentTurn];
+        if (currentPlayer.id === playerId && this.actionType === 'move') {
+          this.moveDistance += 5;
+          this.addEvent(`${player.c.n} moved 5ft (${this.moveDistance}/25ft used)`);
+          
+          // Consume action every 25ft
+          if (this.moveDistance >= 25) {
+            this.currentActions--;
+            this.moveDistance = 0;
+            this.addEvent(`Movement action consumed. ${this.currentActions} actions remaining.`);
+            if (this.currentActions <= 0) this.actionType = null;
+          }
+        }
+      }
+      
+      // Sync updated game state
+      this.syncGameState();
+    }
+  },
+
+  // Sync full game state (host only)
+  syncGameState() {
+    console.log('syncGameState called:', { gameMode: this.gameMode, hasCombat: !!this.combat });
+    if (this.gameMode !== 'host' || !this.combat) {
+      console.log('syncGameState early return:', { gameMode: this.gameMode, hasCombat: !!this.combat });
+      return;
+    }
+    
+    const gameState = {
+      cats: this.cs.map(c => ({
+        id: c.id, n: c.n, pos: c.pos, h: c.h, m: c.m, a: c.a, v: c.v,
+        c: c.c, s: c.s, color: c.color, i: c.i, isBoss: c.isBoss, isAI: c.isAI
+      })),
+      buildings: this.buildings || [],
+      turnOrder: this.turnOrder.map(c => c.id),
+      currentTurn: this.currentTurn,
+      currentActions: this.currentActions,
+      combat: { round: this.combat.round },
+      eventLog: this.eventLog || []
+    };
+    
+    this.send('game_state', gameState);
+  },
+
+  // Receive game state from host
+  receiveGameState(msg) {
+    if (this.gameMode === 'host') return; // Ignore if we're host
+    
+    console.log('Receiving game state:', msg);
+    
+    // Clear all existing objects
+    E.objects = [];
+    
+    // Generate buildings from host data
+    if (msg.buildings && msg.buildings.length > 0) {
+      this.generateCity(true, msg.buildings);
+    }
+    
+    // Update cats
+    this.cs = msg.cats.map(data => {
+      const cat = { ...data };
+      if (cat.isBoss) {
+        // Boss cat is 10x10x10
+        const bossObj = { type: 'boss', x: cat.pos.x, y: cat.pos.y, z: cat.pos.z, w: 10, h: 10, d: 10, color: cat.color, catId: cat.id };
+        E.objects.push(bossObj);
+      } else {
+        // Regular cat
+        E.add('cat', cat.pos.x, cat.pos.y, cat.pos.z, 3, 5, 3, cat.color);
+        E.objects[E.objects.length - 1].catId = cat.id;
+      }
+      return cat;
+    });
+
+    // Find this client's player in the cats array
+    this.p = this.cs.find(c => c.id === this.id);
+    
+    if (this.p) {
+      // Position camera behind player
+      E.cam.x = this.p.pos.x;
+      E.cam.y = 25;  
+      E.cam.z = this.p.pos.z + 25;
+      E.cam.rx = -0.3;
+      E.cam.ry = Math.PI;
+    }
+    
+    // Update turn order - all cats are already in this.cs
+    this.turnOrder = msg.turnOrder.map(id => 
+      this.cs.find(c => c.id === id)
+    ).filter(c => c);
+    
+    // Update combat state
+    this.currentTurn = msg.currentTurn;
+    this.currentActions = msg.currentActions;
+    this.combat = { participants: [...this.cs, this.p], ...msg.combat };
+    
+    // Update event log
+    if (msg.eventLog) {
+      this.eventLog = msg.eventLog;
+    }
+    
+    console.log('Client game state updated:', { 
+      cats: this.cs.length, 
+      turnOrder: this.turnOrder.map(c => c.c.n), 
+      currentTurn: this.currentTurn 
+    });
+  },
+
+  // Send turn update (host only)
+  syncTurnState() {
+    if (this.gameMode !== 'host') return;
+    
+    this.send('turn_update', {
+      currentTurn: this.currentTurn,
+      currentActions: this.currentActions,
+      round: this.combat.round
+    });
+  },
+
+  // Receive turn update
+  receiveTurnUpdate(msg) {
+    if (this.gameMode === 'host') return;
+    
+    this.currentTurn = msg.currentTurn;
+    this.currentActions = msg.currentActions;
+    if (this.combat) this.combat.round = msg.round;
+  },
+  
+  renderLobby() {
+    const ctx = E.ctx;
+    
+    const centerX = E.w / 2;
+    const centerY = E.h / 2;
+    
+    // Title
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText('Game Lobby', centerX, centerY - 150);
+    
+    // Room code display
+    ctx.font = '32px monospace';
+    ctx.fillStyle = '#00ffff';
+    ctx.fillText(`Room Code: ${this.roomCode}`, centerX, centerY - 80);
+    
+    // Player count
+    ctx.font = '24px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`Players Connected: ${this.connectedPlayers}/6`, centerX, centerY - 40);
+    
+    // Options - different for host vs joined players
+    ctx.font = '20px monospace';
+    if (this.gameMode === 'host') {
+      const options = ['Start Game (with current players)', 'Start Game (solo)', 'Back to Menu'];
+      options.forEach((option, i) => {
+        const y = centerY + 20 + (i * 30);
+        ctx.fillStyle = this.menuSelection === i ? '#ffffff' : '#888888';
+        ctx.fillText(option, centerX, y);
+      });
+    } else {
+      // Joined player - just show waiting status
+      ctx.fillStyle = '#cccccc';
+      ctx.fillText('Waiting for host to start the game...', centerX, centerY + 20);
+      ctx.font = '16px monospace';
+      const option = 'Back to Menu';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(option, centerX, centerY + 60);
+    }
+    
+    // Instructions
+    ctx.font = '16px monospace';
+    ctx.fillStyle = '#cccccc';
+    ctx.textAlign = 'left';
+    ctx.fillText('Use W/S or Arrow Keys to navigate', 20, E.h - 60);
+    ctx.fillText('Press ENTER to select', 20, E.h - 40);
+    ctx.fillText('Other players can join with room code', 20, E.h - 20);
+  },
+  
+  generateRoomCode() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let code = '';
+    for (let i = 0; i < 4; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return code;
+  },
+  
+  initGame() {
+    if (this.gameInitialized) {
+      console.log('INITGAME ALREADY CALLED - SKIPPING');
+      return;
+    }
+    this.gameInitialized = true;
+    
+    console.log('INITGAME CALLED - HOST GENERATING WORLD');
+    // Initialize game world  
+    this.buildings = []; // Store building data
+    this.spawnCats();
+    this.generateCity(true);
+    
+    // Start combat after a brief delay with all cats
+    setTimeout(() => {
+      const allCats = this.cs.filter(c => c && c.v);
+      if (allCats.length > 0) {
+        this.startCombat(allCats);
+      }
+    }, 500);
+  },
+  
   // Add event to log
-  addEvent(text) {
+  addEvent(text, isPrompt = false) {
     this.eventLog.unshift(text);
     if (this.eventLog.length > 8) this.eventLog.pop(); // Keep last 8 events
+    
+    // Host broadcasts non-prompt events to clients
+    // Never broadcast player-specific prompts or selections
+    const shouldNotBroadcast = isPrompt || 
+      text.includes('Selected') && text.includes('action') ||
+      text.includes('Choose') ||
+      text.includes('No enemies in range') ||
+      text.includes('Not enough actions') ||
+      /^\d+\)/.test(text); // Any line starting with number and parenthesis
+    
+    const shouldBroadcast = this.gameMode === 'host' && !shouldNotBroadcast;
+    
+    if (shouldBroadcast) {
+      this.send('event_broadcast', { text });
+    }
     
     // Update HTML event log
     const eventList = document.querySelector('#event-list');
@@ -523,9 +1319,9 @@ let G = {
   // Show target selection dialog
   showTargetDialog(targets, actionType) {
     this.targetDialog = { targets, actionType };
-    this.addEvent(`Choose target (1-${targets.length}):`);
+    this.addEvent(`Choose target (1-${targets.length}):`, true);
     targets.forEach((t, i) => {
-      this.addEvent(`${i + 1}) ${t.c.n} Cat`);
+      this.addEvent(`${i + 1}) ${t.c.n} Cat`, true);
     });
   },
   
@@ -538,6 +1334,8 @@ let G = {
       const target = this.targetDialog.targets[index];
       if (this.targetDialog.actionType === 'attack') {
         this.executeAttack(target);
+      } else if (this.targetDialog.actionType === 'cast') {
+        this.executeCast(target, this.targetDialog.spell);
       }
       this.targetDialog = null;
     }
@@ -546,20 +1344,26 @@ let G = {
   // Set current action type
   setAction(type) {
     if (!this.combat || this.currentActions <= 0) return;
-    if (this.turnOrder[this.currentTurn] !== this.p) return;
+    if (this.turnOrder[this.currentTurn]?.id !== this.p.id) return;
     
     this.actionType = type;
-    this.addEvent(`Selected ${type} action`);
+    this.addEvent(`Selected ${type} action`, true);
     
-    // Auto-attack if attack selected and enemies in range
+    // Auto-execute based on action type
     if (type === 'attack') {
       this.attemptAttack();
+    } else if (type === 'cast') {
+      this.attemptCast();
+    } else if (type === 'heal') {
+      this.attemptHeal();
+    } else if (type === 'stealth') {
+      this.attemptStealth();
     }
   },
   
   // End current action
   endAction() {
-    if (!this.combat || this.turnOrder[this.currentTurn] !== this.p) return;
+    if (!this.combat || this.turnOrder[this.currentTurn]?.id !== this.p.id) return;
     
     if (this.actionType === 'move' && this.moveDistance > 0) {
       // Consume action for partial movement
@@ -574,7 +1378,7 @@ let G = {
   // Attempt attack on nearby enemies
   attemptAttack() {
     const enemies = this.cs.filter(cat => {
-      if (!cat.v) return false;
+      if (!cat.v || cat.id === this.p.id) return false; // Exclude dead cats and self
       
       if (cat.isBoss) {
         // Boss cat occupies 2x2 grid - check adjacency to any square
@@ -591,16 +1395,15 @@ let G = {
         
         return (adjacentX && overlapZ) || (adjacentZ && overlapX);
       } else {
-        // Regular cat - simple distance check
-        const dx = cat.pos.x - this.p.pos.x;
-        const dz = cat.pos.z - this.p.pos.z;
-        const dist = Math.sqrt(dx*dx + dz*dz);
-        return dist <= 5;
+        // Regular cat - adjacent grid square check (including diagonal)
+        const dx = Math.abs(cat.pos.x - this.p.pos.x);
+        const dz = Math.abs(cat.pos.z - this.p.pos.z);
+        return dx <= 5 && dz <= 5;
       }
     });
     
     if (enemies.length === 0) {
-      this.addEvent('No enemies in range for attack');
+      this.addEvent('No enemies in range for attack', true);
       return;
     }
     
@@ -616,23 +1419,32 @@ let G = {
   
   // Execute attack on specific target
   executeAttack(target) {
-    const map = this.attackCount * -5; // Multiple Attack Penalty
-    const result = P.k(this.p, target, map);
-    
-    this.currentActions--;
-    this.attackCount++;
-    
-    const mapText = map < 0 ? ` (MAP ${map})` : '';
-    const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
-    const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
-    
-    if (result.h) {
-      const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
-      const dmgText = `1d6${strText} [${result.d}]`;
-      this.addEvent(`Claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
-      if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+    if (this.gameMode === 'host') {
+      // Host processes attack locally
+      const map = this.attackCount * -5; // Multiple Attack Penalty
+      const result = P.k(this.p, target, map);
+      
+      this.currentActions--;
+      this.attackCount++;
+      
+      const mapText = map < 0 ? ` (MAP ${map})` : '';
+      const bonusText = result.atkBonus >= 0 ? `+${result.atkBonus}` : `${result.atkBonus}`;
+      const rollText = `1d20${bonusText} [${result.total}] vs AC ${result.targetAC}`;
+      
+      if (result.h) {
+        const strText = result.strMod >= 0 ? `+${result.strMod}` : `${result.strMod}`;
+        const dmgText = `1d6${strText} [${result.d}]`;
+        this.addEvent(`Claw attack${mapText}: ${rollText} HIT for ${dmgText} damage`);
+        if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+      } else {
+        this.addEvent(`Claw attack${mapText}: ${rollText} MISS`);
+      }
+      
+      // Sync game state after player attack
+      this.syncGameState();
     } else {
-      this.addEvent(`Claw attack${mapText}: ${rollText} MISS`);
+      // Client sends attack command to host
+      this.send('player_attack', { targetId: target.id, playerId: this.p.id });
     }
     
     // Check if combat should end
@@ -645,8 +1457,125 @@ let G = {
     if (this.currentActions <= 0) this.actionType = null;
   },
   
+  // Attempt cast spell
+  attemptCast() {
+    const spells = this.p.c.s || [];
+    const offensiveSpells = spells.filter(s => s === 'firebolt' || s === 'harm');
+    
+    if (offensiveSpells.length === 0) {
+      this.addEvent('No offensive spells available');
+      return;
+    }
+    
+    const spell = offensiveSpells[0]; // Use first available
+    const enemies = this.cs.filter(cat => {
+      if (!cat.v || cat.id === this.p.id) return false; // Exclude dead cats and self
+      const dx = cat.pos.x - this.p.pos.x;
+      const dz = cat.pos.z - this.p.pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      return dist <= 30; // 30ft range
+    });
+    
+    if (enemies.length === 0) {
+      this.addEvent('No enemies in spell range (30ft)');
+      return;
+    }
+    
+    if (enemies.length === 1) {
+      this.executeCast(enemies[0], spell);
+    } else {
+      this.targetDialog = { targets: enemies, actionType: 'cast', spell };
+      this.addEvent(`Cast ${spell} - Choose target (1-${enemies.length}):`, true);
+      enemies.forEach((t, i) => {
+        this.addEvent(`${i + 1}) ${t.c.n} Cat`, true);
+      });
+    }
+  },
+  
+  // Execute spell cast
+  executeCast(target, spell) {
+    const result = P.spell(this.p, target, spell);
+    
+    this.currentActions--;
+    
+    if (result.h) {
+      const rollText = `1d20+${result.atkBonus} [${result.total}] vs AC ${result.targetAC}`;
+      this.addEvent(`${spell}: ${rollText} HIT for ${result.d} damage (${result.die})`);
+      if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+    } else if (result.msg) {
+      this.addEvent(`${spell}: ${result.msg}`);
+    } else {
+      const rollText = `1d20+${result.atkBonus} [${result.total}] vs AC ${result.targetAC}`;
+      this.addEvent(`${spell}: ${rollText} MISS`);
+    }
+    
+    const alive = this.turnOrder.filter(cat => cat.v);
+    if (alive.length <= 1) {
+      this.endCombat();
+      return;
+    }
+    
+    if (this.currentActions <= 0) this.actionType = null;
+  },
+  
+  // Attempt heal
+  attemptHeal() {
+    const spells = this.p.c.s || [];
+    const healSpells = spells.filter(s => s.startsWith('heal'));
+    
+    if (healSpells.length === 0) {
+      this.addEvent('No healing spells available');
+      return;
+    }
+    
+    // Show heal options
+    this.addEvent('Choose healing spell:', true);
+    this.addEvent('1) Heal (1 action) - 1d8+Wis', true);
+    this.addEvent('2) Greater Heal (2 actions) - 2d8+Wis', true);  
+    this.addEvent('3) Mass Heal (3 actions) - 3d8+Wis', true);
+    
+    this.healDialog = true;
+  },
+  
+  // Execute heal
+  executeHeal(level) {
+    const actionCost = level;
+    if (this.currentActions < actionCost) {
+      this.addEvent(`Not enough actions (need ${actionCost}, have ${this.currentActions})`);
+      return;
+    }
+    
+    const spellName = `heal${level}`;
+    const result = P.spell(this.p, null, spellName);
+    
+    this.currentActions -= actionCost;
+    this.addEvent(`${spellName}: Healed ${result.heal} HP (${result.msg})`);
+    
+    if (this.currentActions <= 0) this.actionType = null;
+    this.healDialog = false;
+  },
+  
+  // Attempt stealth
+  attemptStealth() {
+    const spells = this.p.c.s || [];
+    
+    if (!spells.includes('hide')) {
+      this.addEvent('Stealth not available for this class');
+      return;
+    }
+    
+    const result = P.spell(this.p, null, 'hide');
+    this.currentActions--;
+    this.addEvent(`Hide: ${result.msg}`);
+    
+    if (this.currentActions <= 0) this.actionType = null;
+  },
+  
   // Next combat turn
   nextTurn() {
+    // Only host can advance turns
+    if (this.gameMode !== 'host') return;
+    
     // Skip dead cats
     do {
       this.currentTurn = (this.currentTurn + 1) % this.turnOrder.length;
@@ -663,6 +1592,9 @@ let G = {
     
     const currentCat = this.turnOrder[this.currentTurn];
     this.addEvent(`${currentCat.c.n}'s turn begins`);
+    
+    // Sync turn state to all players
+    this.syncTurnState();
     
     // AI behavior for NPCs
     if (currentCat !== this.p && currentCat.v) {
@@ -742,6 +1674,9 @@ let G = {
         }
         attacks++;
         actions--;
+        
+        // Sync game state after AI attack
+        this.syncGameState();
       } else if (dist > 5) {
         // Move closer - try multiple movement options
         let moved = false;
@@ -803,6 +1738,9 @@ let G = {
           }
           actions--;
           this.addEvent(`${currentCat.c.n} moves ${moveDistance}ft closer. ${actions} actions remaining.`);
+          
+          // Sync game state after AI movement
+          this.syncGameState();
         } else {
           // Can't move at all, skip action
           actions--;
@@ -832,14 +1770,19 @@ let G = {
     if (boss && !boss.v) {
       // Boss defeated - major victory!
       this.addEvent(`🏆🏆🏆 ?????? DEFEATED! The alley is saved!`);
-      if (this.p.v) {
+      if (this.p && this.p.v) {
         this.addEvent(`You are victorious!`);
+      } else {
+        this.addEvent(`You are defeated but witnessed the victory!`);
       }
     } else if (aliveCats.length === 1) {
       if (aliveCats[0].isBoss) {
         this.addEvent(`💀 ?????? reigns supreme! All hope is lost...`);
       } else {
         this.addEvent(`🏆 ${aliveCats[0].c.n} wins the battle!`);
+      }
+      if (this.p && !this.p.v) {
+        this.addEvent(`You are defeated!`);
       }
     } else if (aliveCats.length === 0) {
       this.addEvent(`💀 All cats have fallen...`);
@@ -853,89 +1796,168 @@ let G = {
   
   // Render
   render() {
+    // Always render the 3D scene for consistent grid background
     E.render();
-    // Arrow must render after E.render() so cat positions are calculated
-    this.renderArrow();
-    this.renderUI();
+    
+    if (this.s === 'splash' || this.s === 'menu' || this.s === 'lobby') {
+      this.renderMenuOverlay();
+    } else {
+      this.renderUI();
+    }
   },
-
-  // Render arrow above active cat
-  renderArrow() {
-    if (!this.combat || !this.turnOrder) {
-      console.log('Arrow: No combat or turnOrder');
-      return;
-    }
-    
-    const activeCat = this.turnOrder[this.currentTurn];
-    if (!activeCat || !activeCat.v) {
-      console.log('Arrow: No active cat or cat dead');
-      return;
-    }
-    
-    // Calculate fresh screen position from world coordinates
-    const gridX = activeCat.pos.x * 5; // 5ft per grid square
-    const gridZ = activeCat.pos.z * 5;
-    const centerX = gridX + 2.5; // Center of grid square
-    const centerZ = gridZ + 2.5;
-    
-    const screenPos = E.project(centerX, 0, centerZ); // Ground level
-    if (!screenPos) {
-      console.log('Arrow: Cat position not projectable');
-      return;
-    }
-    
+  
+  // Render menu overlay on top of 3D scene
+  renderMenuOverlay() {
     const ctx = E.ctx;
     
-    // Calculate sprite size (same as sprite rendering)
-    const worldSize = 5;
-    const distanceFromCamera = screenPos.z;
-    const spriteSize = Math.max(8, worldSize * 800 / distanceFromCamera);
+    if (this.s === 'splash') {
+      this.renderSplash(ctx);
+    } else if (this.s === 'menu') {
+      this.renderGameMenu(ctx);
+    } else if (this.s === 'lobby') {
+      this.renderLobby();
+    }
+  },
+  
+  renderSplash(ctx) {
+    ctx.textAlign = 'center';
     
-    // Apply same adjustments as sprite rendering
-    let spriteTop = screenPos.y - spriteSize;
+    const centerX = E.w / 2;
+    const centerY = E.h / 2;
     
-    // Check if this is the boss cat
-    const isBoss = activeCat.c && activeCat.c.n === '??????';
+    ctx.font = '36px monospace';
+    ctx.fillStyle = '#00ffff'; // Cyan
+    ctx.fillText('polyhedron games', centerX, centerY - 100);
+    
+    ctx.font = '24px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('presents', centerX, centerY - 50);
+    
+    ctx.font = '48px monospace';
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText('Roll for Mischief', centerX, centerY + 20);
+    
+    ctx.font = '24px monospace';
+    ctx.fillStyle = '#888888';
+    ctx.fillText('https://polyhedron.games', centerX, centerY + 80);
+    
+    ctx.font = '18px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('Press SPACE to continue', centerX, centerY + 140);
+    
+    ctx.textAlign = 'left';
+  },
+  
+  renderGameMenu(ctx) {
+    const centerX = E.w / 2;
+    const centerY = E.h / 2;
+    
+    // Normal cat cursor position
+    const cursorX = centerX - 60;
+    const cursorY = centerY + (this.menuSelection * 60) - 52;
+    
+    // Align title with cursor - get cursor left edge
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'left'; // Change to left align
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText('Roll for Mischief', cursorX, centerY - 100);
+    
+    // Big boss cat on the left side - render actual sprite
+    const bossX = centerX - 350;
+    const bossY = centerY - 120;
+    this.renderCatSprite(ctx, bossX, bossY, 200, '#000000', true); // Boss sprite
+    
+    // Menu options
+    ctx.font = '32px monospace';
+    const options = ['Start Game', 'Join Game'];
+    
+    options.forEach((option, i) => {
+      const y = centerY + (i * 60) - 20;
+      ctx.fillStyle = this.menuSelection === i ? '#ffffff' : '#888888';
+      ctx.fillText(option, centerX + 60, y);
+    });
+    
+    // Normal cat cursor - render actual sprite
+    this.renderCatSprite(ctx, cursorX, cursorY, 48, '#ffaa00', false);
+    
+    ctx.textAlign = 'left';
+    
+    // Instructions
+    ctx.font = '16px monospace';
+    ctx.fillStyle = '#cccccc';
+    ctx.fillText('Use W/S or Arrow Keys to navigate', 20, E.h - 60);
+    ctx.fillText('Press ENTER to select', 20, E.h - 40);
+  },
+  
+  renderCatSprite(ctx, x, y, size, baseColor, isBoss) {
+    // Use the actual sprite data from SPRITES.cat
+    if (!SPRITES || !SPRITES.cat) return;
+    
+    const spriteData = SPRITES.cat.data;
+    const colors = SPRITES.cat.colors;
+    const spriteSize = SPRITES.cat.size; // 32x32
+    const pixelSize = size / spriteSize;
+    
+    // Each character in spriteData represents one pixel
+    // '0' = transparent, other characters = color keys
+    let pixelIndex = 0;
+    
+    for (let i = 0; i < spriteData.length; i++) {
+      const colorKey = spriteData[i];
+      
+      if (colorKey !== '0') { // Skip transparent pixels
+        const color = isBoss && colorKey !== '0' ? '#000000' : (colors[colorKey] || baseColor);
+        if (color) {
+          const px = pixelIndex % spriteSize;
+          const py = Math.floor(pixelIndex / spriteSize);
+          
+          ctx.fillStyle = color;
+          ctx.fillRect(
+            x + px * pixelSize,
+            y + py * pixelSize,
+            pixelSize,
+            pixelSize
+          );
+        }
+      }
+      
+      pixelIndex++;
+    }
+    
+    // Add boss cat yellow eyes if needed
     if (isBoss) {
-      spriteTop += 10; // Same as boss sprite adjustment
+      ctx.fillStyle = '#ffff00';
+      ctx.fillRect(x + 14 * pixelSize, y + 10 * pixelSize, 4 * pixelSize, 3 * pixelSize);
+      ctx.fillRect(x + 22 * pixelSize, y + 10 * pixelSize, 4 * pixelSize, 3 * pixelSize);
     }
-    
-    // Check if defeated
-    if (!activeCat.v) {
-      spriteTop += spriteSize * 0.4; // Same as defeated sprite adjustment  
-    }
-    
-    // Position arrow at middle of sprite
-    const arrowX = screenPos.x;
-    const arrowY = spriteTop + spriteSize * 0.5; // Middle of sprite
-    
-    // Draw arrow pointing down
-    ctx.fillStyle = '#ffff00';
-    ctx.beginPath();
-    ctx.moveTo(arrowX, arrowY);
-    ctx.lineTo(arrowX - 8, arrowY - 15);
-    ctx.lineTo(arrowX + 8, arrowY - 15);
-    ctx.closePath();
-    ctx.fill();
-    
-    // Arrow outline
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 2;
-    ctx.stroke();
   },
   
   // Update UI elements
   updateUI() {
-    const stats = document.querySelector('#player-stats div');
-    if (stats && this.p) {
-      stats.innerHTML = `<strong>${this.p.c.n} Cat</strong><br>HP: ${this.p.h}/${this.p.m}<br>AC: ${this.p.a}<br>Pos: (${this.p.pos.x}, ${this.p.pos.z})`;
-    }
+    // Hide UI elements in lobby/menu states
+    const hideUI = this.s === 'splash' || this.s === 'menu' || this.s === 'lobby';
     
-    const lb = document.querySelector('#leaderboard-list');
-    if (lb) {
-      const connected = this.w && this.w.readyState === 1;
-      const count = this.cs.filter(c => c.v).length + (this.p.v ? 1 : 0);
-      lb.innerHTML = connected ? `Connected: ${count} cats` : 'Connecting...';
+    const stats = document.querySelector('.stats-panel');
+    if (stats) stats.style.display = hideUI ? 'none' : 'block';
+    
+    const eventLog = document.querySelector('.event-log');
+    if (eventLog) eventLog.style.display = hideUI ? 'none' : 'block';
+    
+    const leaderboard = document.querySelector('.leaderboard');
+    if (leaderboard) leaderboard.style.display = hideUI ? 'none' : 'block';
+    
+    if (!hideUI) {
+      const statsDiv = document.querySelector('#player-stats div');
+      if (statsDiv && this.p) {
+        statsDiv.innerHTML = `<strong>${this.p.c.n} Cat</strong><br>HP: ${this.p.h}/${this.p.m}<br>AC: ${this.p.a}<br>Pos: (${this.p.pos.x}, ${this.p.pos.z})`;
+      }
+      
+      const lb = document.querySelector('#leaderboard-list');
+      if (lb) {
+        const connected = (this.ws && this.ws.readyState === 1) || (this.w && this.w.readyState === 1);
+        const count = this.cs.filter(c => c.v).length + (this.p && this.p.v ? 1 : 0);
+        lb.innerHTML = connected ? `Connected: ${count} cats` : 'Connecting...';
+      }
     }
   },
   
@@ -1046,6 +2068,51 @@ let G = {
     ctx.font = '12px monospace';
     
     if (this.combat) {
+      // Stat block display (T key toggle)
+      if (this.showStatBlock && this.p.v) {
+        const statY = E.h - 250; // Higher above the combat controls
+        ctx.fillStyle = '#00ffff';
+        ctx.fillText(`${this.p.c.n} Stats:`, 20, statY);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`HP: ${this.p.h}/${this.p.m}`, 20, statY + 15);
+        ctx.fillText(`AC: ${this.p.a}`, 20, statY + 30);
+        
+        // Left column - ability scores
+        const strMod = Math.floor((this.p.s.S - 10) / 2);
+        const dexMod = Math.floor((this.p.s.D - 10) / 2);
+        const conMod = Math.floor((this.p.s.C - 10) / 2);
+        const intMod = Math.floor((this.p.s.I - 10) / 2);
+        const wisMod = Math.floor((this.p.s.W - 10) / 2);
+        const chaMod = Math.floor((this.p.s.H - 10) / 2);
+        
+        ctx.fillText(`STR: ${this.p.s.S} (${strMod >= 0 ? '+' : ''}${strMod})`, 20, statY + 45);
+        ctx.fillText(`DEX: ${this.p.s.D} (${dexMod >= 0 ? '+' : ''}${dexMod})`, 20, statY + 60);
+        ctx.fillText(`CON: ${this.p.s.C} (${conMod >= 0 ? '+' : ''}${conMod})`, 20, statY + 75);
+        ctx.fillText(`INT: ${this.p.s.I} (${intMod >= 0 ? '+' : ''}${intMod})`, 20, statY + 90);
+        ctx.fillText(`WIS: ${this.p.s.W} (${wisMod >= 0 ? '+' : ''}${wisMod})`, 20, statY + 105);
+        ctx.fillText(`CHA: ${this.p.s.H} (${chaMod >= 0 ? '+' : ''}${chaMod})`, 20, statY + 120);
+        
+        // Right column - combat stats with damage
+        const meleeBonus = this.p.c.a + strMod;
+        const meleeDmg = `1d6+${strMod}`;
+        ctx.fillText(`Melee: +${meleeBonus} (${meleeDmg})`, 180, statY + 45);
+        
+        // Show spell attack bonus if has spells
+        const classSpells = this.p.c.s || [];
+        if (classSpells.includes('firebolt')) {
+          const spellBonus = this.p.c.a + intMod;
+          ctx.fillText(`Spell: +${spellBonus} (1d10)`, 180, statY + 60);
+        }
+        if (classSpells.includes('harm')) {
+          const spellBonus = this.p.c.a + wisMod;
+          const spellDmg = `1d8+${wisMod}`;
+          ctx.fillText(`Spell: +${spellBonus} (${spellDmg})`, 180, statY + 60);
+        }
+        if (classSpells.includes('hide')) {
+          ctx.fillText(`Stealth: +${dexMod}`, 180, statY + 75);
+        }
+      }
+      
       // Combat controls in green in bottom left
       const currentCat = this.turnOrder[this.currentTurn];
       if (currentCat === this.p && this.p.v) {
@@ -1053,21 +2120,38 @@ let G = {
         const actionsText = `Actions: ${this.currentActions}/3`;
         ctx.fillText(actionsText, 20, E.h - 80);
         
-        // Action dots right next to Actions text
+        // Action dots with space after Actions text
         const textWidth = ctx.measureText(actionsText).width;
         for (let i = 0; i < 3; i++) {
           ctx.fillStyle = i < this.currentActions ? '#00ff00' : '#666666';
           ctx.beginPath();
-          ctx.arc(25 + textWidth + i * 15, E.h - 85, 4, 0, Math.PI * 2);
+          ctx.arc(30 + textWidth + i * 15, E.h - 85, 4, 0, Math.PI * 2);
           ctx.fill();
         }
         
         ctx.fillStyle = '#00ff00';
-        ctx.fillText(`Mode: ${this.actionType || 'None'}`, 20, E.h - 65);
-        if (this.actionType === 'move') {
-          ctx.fillText(`Movement: ${this.moveDistance}/25ft`, 20, E.h - 50);
+        const modeText = this.actionType === 'move' 
+          ? `Mode: ${this.actionType} (${this.moveDistance}/25ft)`
+          : `Mode: ${this.actionType || 'None'}`;
+        ctx.fillText(modeText, 20, E.h - 65);
+        const classSpells = this.p.c.s || [];
+        let helpText = 'M=Move, X=Attack';
+        if (classSpells.includes('firebolt') || classSpells.includes('harm')) helpText += ', C=Cast';
+        if (classSpells.some(s => s.startsWith('heal'))) helpText += ', H=Heal';
+        if (classSpells.includes('hide')) helpText += ', Z=Stealth';
+        
+        // Always show basic controls on first line
+        const basicText = 'M=Move, X=Attack, T=Stats';
+        ctx.fillText(basicText, 20, E.h - 50);
+        
+        // Show specials on second line if any
+        const specialsText = helpText.replace('M=Move, X=Attack', '').trim();
+        if (specialsText) {
+          ctx.fillText(specialsText.substring(2), 20, E.h - 35); // Remove leading ', '
         }
-        ctx.fillText('M=Move, X=Attack, Space=End Turn', 20, E.h - 35);
+        
+        // Show end turn on third line
+        ctx.fillText('Space=End Turn', 20, E.h - 20);
       } else {
         ctx.fillStyle = '#ffff00';
         ctx.fillText(`${currentCat.c.n}'s Turn`, 20, E.h - 80);
