@@ -33,6 +33,7 @@ let G = {
   connectedPlayers: 0, // Number of connected players
   ws: null, // WebSocket connection
   
+
   // Initialize
   init() {
     console.log('INIT CALLED');
@@ -533,21 +534,22 @@ let G = {
   
   // Check if position is occupied by a cat
   occupied(x, z, e = null) {
-    // Check player position
-    if (this.p && this.p !== e && this.p.pos.x === x && this.p.pos.z === z) return 1;
+    // Check player position (only if alive)
+    if (this.p && this.p !== e && this.p.v && this.p.pos.x === x && this.p.pos.z === z) return 1;
     
-    // Check all cats
+    // Check all cats (only living cats block movement)
     return this.cs.some(c => {
-      if (c === e || !c.v) return false;
+      if (c === e || !c.v) return false; // Dead cats don't block
       
       if (c.isBoss) {
-        // Boss cat occupies 2x2 grid (10ft x 10ft)
-        const bossLeft = c.pos.x - 5;
-        const bossRight = c.pos.x + 5;
-        const bossTop = c.pos.z - 5;
-        const bossBottom = c.pos.z + 5;
+        // Boss cat occupies 2x2 grid - use EXACT same logic as 3D rendering engine
+        const gridSize = 5; // this.gridSize
+        const gridX = Math.floor(c.pos.x / gridSize) * gridSize;
+        const gridZ = Math.floor(c.pos.z / gridSize) * gridSize;
+        const bossGridSize = gridSize * 2; // Boss is 2x2
         
-        return x >= bossLeft && x <= bossRight && z >= bossTop && z <= bossBottom;
+        return x >= gridX && x < gridX + bossGridSize && 
+               z >= gridZ && z < gridZ + bossGridSize;
       } else {
         // Regular cat occupies single 5ft square
         return c.pos.x === x && c.pos.z === z;
@@ -689,12 +691,14 @@ let G = {
         // Check for nearby enemies
         this.checkCombat();
         
-        // Camera following - move camera by same amount cat moved
-        const deltaX = this.p.pos.x - this.lastCatPos.x;
-        const deltaZ = this.p.pos.z - this.lastCatPos.z;
-        
-        E.cam.x += deltaX;  // Move camera by exact same amount
-        E.cam.z += deltaZ;
+        // Camera following - only for host (clients don't manage their own position)
+        if (this.gameMode === 'host') {
+          const deltaX = this.p.pos.x - this.lastCatPos.x;
+          const deltaZ = this.p.pos.z - this.lastCatPos.z;
+          
+          E.cam.x += deltaX;  // Move camera by exact same amount
+          E.cam.z += deltaZ;
+        }
         
         // Store current cat position for next time
         this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
@@ -970,11 +974,15 @@ let G = {
       this.clearTurnTimeout(); // Player took action, clear timeout
       this.handleClientMove(msg);
     } else if (msg.type === 'event_broadcast') {
-      // Client receives event from host - add directly to avoid prompt filtering
-      this.eventLog.unshift(msg.text);
-      if (this.eventLog.length > 8) this.eventLog.pop();
-      
-      // Update HTML event log directly
+      if (this.gameMode === 'host') {
+        // Host receives event from client - broadcast to all clients
+        this.addEvent(msg.text);
+      } else {
+        // Client receives event from host - add directly to avoid prompt filtering
+        this.eventLog.unshift(msg.text);
+        if (this.eventLog.length > 8) this.eventLog.pop();
+        
+        // Update HTML event log directly
       const eventList = document.querySelector('#event-list');
       if (eventList) {
         const eventDiv = document.createElement('div');
@@ -987,6 +995,10 @@ let G = {
           eventList.removeChild(eventList.lastChild);
         }
       }
+      }
+    } else if (msg.type === 'action_update' && this.gameMode === 'host') {
+      // Host receives action count update from client
+      this.currentActions = msg.currentActions;
     }
   },
 
@@ -1033,13 +1045,17 @@ let G = {
       return;
     }
     
-    // Process the attack
-    const map = (attacker.attackCount || 0) * -5; // Multiple Attack Penalty
-    const result = P.k(attacker, target, map);
+    // Use client's action count and attack count
+    if (msg.currentActions !== undefined) {
+      this.currentActions = msg.currentActions;
+    }
+    if (msg.attackCount !== undefined) {
+      this.attackCount = msg.attackCount;
+    }
     
-    // Update attacker state
-    attacker.attackCount = (attacker.attackCount || 0) + 1;
-    this.currentActions--;
+    // Process the attack (use attackCount - 1 for MAP since client already incremented)
+    const map = (msg.attackCount - 1) * -5; // Multiple Attack Penalty
+    const result = P.k(attacker, target, map);
     
     // Add event log
     const mapText = map < 0 ? ` (MAP ${map})` : '';
@@ -1153,15 +1169,27 @@ let G = {
     });
 
     // Find this client's player in the cats array
-    this.p = this.cs.find(c => c.id === this.id);
+    const newP = this.cs.find(c => c.id === this.id);
     
-    if (this.p) {
-      // Position camera behind player
-      E.cam.x = this.p.pos.x;
-      E.cam.y = 25;  
-      E.cam.z = this.p.pos.z + 25;
-      E.cam.rx = -0.3;
-      E.cam.ry = Math.PI;
+    if (newP) {
+      // Camera following for clients - only move camera if player moved
+      if (this.p && this.lastCatPos) {
+        const deltaX = newP.pos.x - this.p.pos.x;
+        const deltaZ = newP.pos.z - this.p.pos.z;
+        
+        E.cam.x += deltaX;  // Move camera by same amount player moved
+        E.cam.z += deltaZ;
+      } else {
+        // First time setup - position camera behind player
+        E.cam.x = newP.pos.x;
+        E.cam.y = 25;  
+        E.cam.z = newP.pos.z + 25;
+        E.cam.rx = -0.3;
+        E.cam.ry = Math.PI;
+      }
+      
+      this.p = newP;
+      this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
     }
     
     // Update turn order - all cats are already in this.cs
@@ -1195,7 +1223,8 @@ let G = {
       currentActions: this.currentActions,
       round: this.combat.round,
       actionType: this.actionType,
-      moveDistance: this.moveDistance
+      moveDistance: this.moveDistance,
+      attackCount: this.attackCount
     });
   },
 
@@ -1208,6 +1237,7 @@ let G = {
     if (this.combat) this.combat.round = msg.round;
     this.actionType = msg.actionType;
     this.moveDistance = msg.moveDistance || 0;
+    this.attackCount = msg.attackCount || 0;
   },
   
   renderLobby() {
@@ -1412,29 +1442,50 @@ let G = {
       if (!cat.v || cat.id === this.p.id) return false; // Exclude dead cats and self
       
       if (cat.isBoss) {
-        // Boss cat occupies 2x2 grid - check adjacency to any square
-        const bossLeft = cat.pos.x - 5;
-        const bossRight = cat.pos.x + 5;
-        const bossTop = cat.pos.z - 5;
-        const bossBottom = cat.pos.z + 5;
+        // Boss cat occupies 2x2 grid - use EXACT same logic as occupancy detection
+        const gridSize = 5;
+        const playerGridX = Math.floor(this.p.pos.x / gridSize) * gridSize;
+        const playerGridZ = Math.floor(this.p.pos.z / gridSize) * gridSize;
+        const bossGridX = Math.floor(cat.pos.x / gridSize) * gridSize;
+        const bossGridZ = Math.floor(cat.pos.z / gridSize) * gridSize;
+        const bossGridSize = gridSize * 2; // Boss is 2x2
         
-        // Check if player is adjacent to any edge of the boss area
-        const adjacentX = (this.p.pos.x === bossLeft - 5) || (this.p.pos.x === bossRight + 5);
-        const adjacentZ = (this.p.pos.z === bossTop - 5) || (this.p.pos.z === bossBottom + 5);
-        const overlapX = this.p.pos.x >= bossLeft - 5 && this.p.pos.x <= bossRight + 5;
-        const overlapZ = this.p.pos.z >= bossTop - 5 && this.p.pos.z <= bossBottom + 5;
-        
-        return (adjacentX && overlapZ) || (adjacentZ && overlapX);
+        // Check if player grid square is adjacent to any boss grid square
+        for (let bx = bossGridX; bx < bossGridX + bossGridSize; bx += gridSize) {
+          for (let bz = bossGridZ; bz < bossGridZ + bossGridSize; bz += gridSize) {
+            const dx = Math.abs(playerGridX - bx);
+            const dz = Math.abs(playerGridZ - bz);
+            if ((dx === 5 && dz === 0) || (dx === 0 && dz === 5) || (dx === 5 && dz === 5)) {
+              return true; // Adjacent (including diagonal)
+            }
+          }
+        }
+        return false;
       } else {
-        // Regular cat - adjacent grid square check (including diagonal)
-        const dx = Math.abs(cat.pos.x - this.p.pos.x);
-        const dz = Math.abs(cat.pos.z - this.p.pos.z);
-        return dx <= 5 && dz <= 5;
+        // Regular cat - use grid-based adjacency like boss occupancy detection
+        const gridSize = 5;
+        const playerGridX = Math.floor(this.p.pos.x / gridSize) * gridSize;
+        const playerGridZ = Math.floor(this.p.pos.z / gridSize) * gridSize;
+        const catGridX = Math.floor(cat.pos.x / gridSize) * gridSize;
+        const catGridZ = Math.floor(cat.pos.z / gridSize) * gridSize;
+        
+        const dx = Math.abs(playerGridX - catGridX);
+        const dz = Math.abs(playerGridZ - catGridZ);
+        return (dx === 5 && dz === 0) || (dx === 0 && dz === 5) || (dx === 5 && dz === 5); // Adjacent including diagonal
       }
     });
     
     if (enemies.length === 0) {
-      this.addEvent('No enemies in range for attack', true);
+      // Debug: show nearby cats and their distances
+      const nearbyCats = this.cs.filter(cat => cat.v && cat.id !== this.p.id);
+      if (nearbyCats.length > 0) {
+        const nearest = nearbyCats[0];
+        const dx = Math.abs(nearest.pos.x - this.p.pos.x);
+        const dz = Math.abs(nearest.pos.z - this.p.pos.z);
+        this.addEvent(`No enemies in range for attack (nearest: dx=${dx}, dz=${dz})`, true);
+      } else {
+        this.addEvent('No enemies in range for attack', true);
+      }
       return;
     }
     
@@ -1474,8 +1525,16 @@ let G = {
       // Sync game state after player attack
       this.syncGameState();
     } else {
-      // Client sends attack command to host
-      this.send('player_attack', { targetId: target.id, playerId: this.p.id });
+      // Client tracks attack count locally and sends to host
+      this.currentActions--;
+      this.attackCount++;
+      
+      this.send('player_attack', { 
+        targetId: target.id, 
+        playerId: this.p.id,
+        currentActions: this.currentActions,
+        attackCount: this.attackCount
+      });
     }
     
     // Check if combat should end
@@ -1529,15 +1588,46 @@ let G = {
     
     this.currentActions--;
     
+    let eventText;
     if (result.h) {
       const rollText = `1d20+${result.atkBonus} [${result.total}] vs AC ${result.targetAC}`;
-      this.addEvent(`${spell}: ${rollText} HIT for ${result.d} damage (${result.die})`);
-      if (!target.v) this.addEvent(`${target.c.n} is defeated!`);
+      eventText = `${this.p.c.n} ${spell}: ${rollText} HIT for ${result.d} damage (${result.die})`;
+      if (!target.v) {
+        const defeatText = `${target.c.n} is defeated!`;
+        if (this.gameMode === 'host') {
+          this.addEvent(eventText);
+          this.addEvent(defeatText);
+        } else {
+          this.send('event_broadcast', { text: eventText });
+          this.send('event_broadcast', { text: defeatText });
+        }
+      } else {
+        if (this.gameMode === 'host') {
+          this.addEvent(eventText);
+        } else {
+          this.send('event_broadcast', { text: eventText });
+        }
+      }
     } else if (result.msg) {
-      this.addEvent(`${spell}: ${result.msg}`);
+      eventText = `${this.p.c.n} ${spell}: ${result.msg}`;
+      if (this.gameMode === 'host') {
+        this.addEvent(eventText);
+      } else {
+        this.send('event_broadcast', { text: eventText });
+      }
     } else {
       const rollText = `1d20+${result.atkBonus} [${result.total}] vs AC ${result.targetAC}`;
-      this.addEvent(`${spell}: ${rollText} MISS`);
+      eventText = `${this.p.c.n} ${spell}: ${rollText} MISS`;
+      if (this.gameMode === 'host') {
+        this.addEvent(eventText);
+      } else {
+        this.send('event_broadcast', { text: eventText });
+      }
+    }
+    
+    // Clients send action count to host
+    if (this.gameMode !== 'host') {
+      this.send('action_update', { playerId: this.p.id, currentActions: this.currentActions });
     }
     
     const alive = this.turnOrder.filter(cat => cat.v);
@@ -1580,7 +1670,14 @@ let G = {
     const result = P.spell(this.p, null, spellName);
     
     this.currentActions -= actionCost;
-    this.addEvent(`${spellName}: Healed ${result.heal} HP (${result.msg})`);
+    const eventText = `${this.p.c.n} ${spellName}: Healed ${result.heal} HP (${result.msg})`;
+    this.addEvent(eventText);
+    
+    // Clients send their events and action count to host
+    if (this.gameMode !== 'host') {
+      this.send('event_broadcast', { text: eventText });
+      this.send('action_update', { playerId: this.p.id, currentActions: this.currentActions });
+    }
     
     if (this.currentActions <= 0) this.actionType = null;
     this.healDialog = false;
@@ -1597,7 +1694,14 @@ let G = {
     
     const result = P.spell(this.p, null, 'hide');
     this.currentActions--;
-    this.addEvent(`Hide: ${result.msg}`);
+    const eventText = `${this.p.c.n} Hide: ${result.msg}`;
+    this.addEvent(eventText);
+    
+    // Clients send their events and action count to host
+    if (this.gameMode !== 'host') {
+      this.send('event_broadcast', { text: eventText });
+      this.send('action_update', { playerId: this.p.id, currentActions: this.currentActions });
+    }
     
     if (this.currentActions <= 0) this.actionType = null;
   },

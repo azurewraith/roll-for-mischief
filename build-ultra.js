@@ -2,7 +2,6 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { minify } = require('terser');
-// const { pack } = require('roadroller'); // Node compatibility issues
 
 async function buildUltra() {
   console.log('🐱 Building ULTRA-COMPRESSED JS13k game...');
@@ -79,10 +78,6 @@ async function buildUltra() {
       toplevel: true,
     },
     mangle: {
-      properties: {
-        regex: /^(eventLog|currentActions|turnOrder|currentTurn|actionType|attackCount|moveDistance|targetDialog|healDialog|showStatBlock|menuSelection|roomCode|gameMode|connectedPlayers|joinedPlayers|catColors|lastCatPos|mouseX|mouseY|isDragging|buildings)$/,
-        reserved: ['E', 'P', 'G', 'SPRITES', 'document', 'window', 'WebSocket', 'console']
-      },
       toplevel: true,
     },
     format: {
@@ -125,35 +120,31 @@ async function buildUltra() {
     .replace(/\s*<\s*/g, '<') // Remove spaces before opening tags
     .replace(/\s*>\s*/g, '>'); // Remove spaces after closing tags
   
-  // Try Roadroller via CLI (more compatible)
-  console.log('🗜️ Running Roadroller via CLI...');
+  // Write minified JS to temp file for Roadroller
+  fs.writeFileSync('./temp-minified.js', minified);
+  
+  console.log('🗜️ Running Roadroller CLI...');
   try {
-    // Write temp file for Roadroller
-    fs.writeFileSync('./temp-minified.js', minified);
+    execSync('roadroller ./temp-minified.js -o ./temp-roadroller.js');
+    const roadrollerResult = fs.readFileSync('./temp-roadroller.js', 'utf8');
+    console.log('📏 After Roadroller:', roadrollerResult.length, 'bytes');
     
-    // Run Roadroller CLI
-    const roadrollerOutput = execSync('npx roadroller temp-minified.js -o temp-roadroller.js', { encoding: 'utf8' });
-    console.log('Roadroller output:', roadrollerOutput);
+    // Clean up temp files
+    fs.unlinkSync('./temp-minified.js');
+    fs.unlinkSync('./temp-roadroller.js');
     
-    // Read back the compressed result
-    if (fs.existsSync('./temp-roadroller.js')) {
-      minified = fs.readFileSync('./temp-roadroller.js', 'utf8');
-      console.log('📏 After Roadroller:', minified.length, 'bytes');
-      
-      // Clean up temp files
-      fs.unlinkSync('./temp-minified.js');
-      fs.unlinkSync('./temp-roadroller.js');
-    }
+    // Use Roadroller output
+    minified = roadrollerResult;
   } catch (error) {
-    console.warn('⚠️ Roadroller CLI failed:', error.message);
-    console.log('📏 Continuing with Terser output:', minified.length, 'bytes');
+    console.warn('⚠️ Roadroller failed, using Terser output:', error.message);
+    console.log('📏 Using Terser output only:', minified.length, 'bytes');
     // Clean up temp files if they exist
-    if (fs.existsSync('./temp-minified.js')) fs.unlinkSync('./temp-minified.js');
-    if (fs.existsSync('./temp-roadroller.js')) fs.unlinkSync('./temp-roadroller.js');
+    try { fs.unlinkSync('./temp-minified.js'); } catch(e) {}
+    try { fs.unlinkSync('./temp-roadroller.js'); } catch(e) {}
   }
   
-  // Inline JS into HTML
-  html = html.replace('/* INLINE_JS */', minified);
+  // Inline JS into HTML - use unique marker
+  html = html.replace('/* INLINE_JS_PLACEHOLDER */', minified);
   
   // Write output
   if (fs.existsSync('./dist')) {
