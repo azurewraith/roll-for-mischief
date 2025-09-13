@@ -915,10 +915,11 @@ let G = {
   handleLobbyMessage(msg) {
     console.log('Lobby message received:', msg);
     
-    // TEMPORARILY REMOVE ROOM FILTERING TO DEBUG
-    // if (msg.room !== this.roomCode && msg.roomCode !== this.roomCode) {
-    //   return;
-    // }
+    // Filter messages by room code
+    if (msg.room !== this.roomCode && msg.roomCode !== this.roomCode) {
+      console.log('Ignoring message from different room:', msg.room || msg.roomCode, 'vs', this.roomCode);
+      return;
+    }
     
     if (msg.type === 'create_room' && msg.host && msg.id !== this.id) {
       // Someone else created this room - shouldn't happen
