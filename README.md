@@ -18,11 +18,17 @@ A multiplayer cat battle royale with simplified Pathfinder 2nd Edition mechanics
 
 ### Controls
 
-- **WASD**: Move your cat around the city
-- **Space**: Interact with nearby cats or initiate encounters
-- **1**: Attack (during combat)
-- **2**: Defend (during combat)
-- **3**: Attempt diplomacy (during combat)
+- **WASD**: Camera controls
+- **Arrow Keys**: Cat Movement Controls
+- **X**: Attack
+- **Z**: Stealth (if Rogue)
+- **C**: Cast (if Wizard or Cleric)
+- **H**: Heal (if Cleric)
+- **T**: View Stat Block
+- **Space**: End Turn
+- **1**: Target Choice
+- **2**: Target Choice
+- **3**: Target Choice
 
 ### Gameplay
 
