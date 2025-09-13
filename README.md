@@ -6,7 +6,7 @@
 
 ## Game Description
 
-A multiplayer cat battle royale with simplified Pathfinder 2nd Edition mechanics. Players control cats in a low-poly city environment, surviving against other players, environmental hazards, and a roaming boss cat.
+A multiplayer cat battle royale with simplified Pathfinder 2nd Edition mechanics. Players control cats in a low-poly synthwave-esque city environment, surviving against other players, environmental hazards, and a roaming boss cat.
 
 ### Key Features
 
@@ -44,10 +44,9 @@ A multiplayer cat battle royale with simplified Pathfinder 2nd Edition mechanics
 
 The game uses extreme compression techniques to fit within 13KB:
 
-- **Micro-Pathfinder**: Essential P2e mechanics in <1KB
-- **Micro-Renderer**: 3D projection and rendering in <2KB
-- **Micro-Game**: Core game loop and networking in <7KB
-- **Variable Compression**: Single-letter variable names throughout
+- **Micro-Pathfinder**: Essential PF2e mechanics
+- **Micro-Renderer**: 3D projection and rendering
+- **Micro-Game**: Core game loop and networking
 - **Function Minification**: Aggressive code compression
 
 ### Multiplayer Support
@@ -142,10 +141,9 @@ To meet the 13KB limit, the game was drastically simplified:
 The game supports real-time multiplayer through:
 
 - Room-based sessions via PartySocket
-- Position broadcasting for movement
-- Combat state synchronization
-- Boss/Player AI shared across all players
-- Graceful offline fallback
+- Party-game Room based Join mechanics
+- Game State/Chat broadcasts
+- Player turn timeouts
 
 ## Future Enhancements
 
