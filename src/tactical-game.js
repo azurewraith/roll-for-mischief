@@ -55,8 +55,8 @@ let G = {
     // Initialize city/grid for menu background
     this.generateCity();
     
-    // Cat colors for differentiation (work better with orange base)
-    this.catColors = ['#ffaa00', '#ff2222', '#88ff88', '#ffffff', '#ff44ff', '#ffff44', '#44ffff'];
+    // Natural cat colors - sequential assignment, no replacement  
+    this.catColors = [null, '#CD853F', '#D2691E', '#A0A0A0', '#F5DEB3', '#DDA0DD']; // Original Orange, Sandy Brown, Tan, Light Gray, Cream, Plum
     
     // Camera controls - set up once
     canvas.addEventListener('mousedown', e => {
@@ -136,7 +136,7 @@ let G = {
         y: 0, 
         z: Math.round(rawZ / 5) * 5 
       };
-      this.p.color = this.catColors[0]; // Player gets first color
+      this.p.color = this.catColors[0] || '#f07010'; // Player gets original orange (no tint)
     }
     this.lastCatPos = { x: this.p.pos.x, z: this.p.pos.z };
     
@@ -153,6 +153,7 @@ let G = {
     // Create copy of class to avoid corrupting shared reference
     boss.c = { ...boss.c, n: '??????' };
     boss.isBoss = true;
+    boss.isAI = true; // Boss is AI controlled
     // Make boss challenging but balanced
     boss.h = boss.m = 60; // 60 HP (reduced from 100)
     boss.a = 16; // High but not impossible AC
@@ -176,7 +177,7 @@ let G = {
     // Fill remaining slots with AI cats up to 6 total players (not counting boss)
     const totalPlayers = 6;
     const aiCatsNeeded = totalPlayers - this.connectedPlayers;
-    const usedPositions = new Set(['0,0', '0,30']); // Player at origin, boss at 0,30
+    const usedPositions = new Set([`${this.p.pos.x},${this.p.pos.z}`, '0,30']); // Player actual pos, boss at 0,30
     
     // Mark joined player positions as used
     if (this.joinedPlayers) {
@@ -189,7 +190,9 @@ let G = {
       const aiCat = P.g(`AI Cat ${i+1}`);
       aiCat.id = `ai_${i}`;
       aiCat.isAI = true; // Mark as AI for turn behavior
-      aiCat.color = this.catColors[i + 1]; // Each AI gets different color
+      // Sequential color assignment - player gets 0, AI cats get 1,2,3,4,5
+      const colorIndex = (i + 1) % this.catColors.length;
+      aiCat.color = this.catColors[colorIndex] || '#f07010';
       
       // Find available grid position
       let x, z, posKey;
@@ -583,10 +586,10 @@ let G = {
           newZ += gridSize;  // South
         }
         if (this.k.has('ArrowLeft')) {
-          newX -= gridSize;  // West
+          newX += gridSize;  // East
         }
         if (this.k.has('ArrowRight')) {
-          newX += gridSize;  // East
+          newX -= gridSize;  // West
         }
         
         // Only move if the new position is not occupied
@@ -612,19 +615,48 @@ let G = {
           requestMove = true;
         }
         if (this.k.has('ArrowLeft')) {
-          newX -= gridSize;
+          newX += gridSize;
           requestMove = true;
         }
         if (this.k.has('ArrowRight')) {
-          newX += gridSize;
+          newX -= gridSize;
           requestMove = true;
         }
         
         if (requestMove && (newX !== this.p.pos.x || newZ !== this.p.pos.z)) {
-          this.send('player_move', { targetX: newX, targetZ: newZ, playerId: this.p.id });
+          this.send('player_move', { 
+            targetX: newX, 
+            targetZ: newZ, 
+            playerId: this.p.id,
+            currentActions: this.currentActions,
+            moveDistance: this.moveDistance 
+          });
           this.lastMove = now; // Prevent spam
+          
+          // Track movement distance locally for client
+          if (this.combat && this.actionType === 'move') {
+            this.moveDistance += 5;
+            this.addEvent(`Moved 5ft (${this.moveDistance}/25ft used)`);
+            
+            // Consume action every 25ft of movement
+            if (this.moveDistance >= 25) {
+              this.currentActions--;
+              this.moveDistance = 0;
+              this.addEvent(`Movement action consumed. ${this.currentActions} actions remaining.`);
+              if (this.currentActions <= 0) this.actionType = null;
+              
+              // Send updated action count to host
+              this.send('player_move', { 
+                targetX: newX, 
+                targetZ: newZ, 
+                playerId: this.p.id,
+                currentActions: this.currentActions,
+                moveDistance: this.moveDistance 
+              });
+            }
+          }
         }
-        return; // Don't process locally
+        return; // Don't process position locally - host handles that
       }
       
       if (moved) {
@@ -706,7 +738,7 @@ let G = {
     this.addEvent(`${firstCat.c.n}'s turn begins`);
     
     // If first cat is AI, trigger its behavior
-    if (firstCat !== this.p && firstCat.v) {
+    if (firstCat.isAI && firstCat.v) {
       setTimeout(() => this.runAITurn(firstCat), 1000);
     }
     
@@ -927,12 +959,15 @@ let G = {
       this.receiveTurnUpdate(msg);
     } else if (msg.type === 'player_attack' && this.gameMode === 'host') {
       // Client is requesting to attack - process on host
+      this.clearTurnTimeout(); // Player took action, clear timeout
       this.handleClientAttack(msg);
     } else if (msg.type === 'end_turn' && this.gameMode === 'host') {
       // Client is requesting to end turn - process on host
+      this.clearTurnTimeout(); // Player took action, clear timeout
       this.nextTurn();
     } else if (msg.type === 'player_move' && this.gameMode === 'host') {
       // Client is requesting to move - process on host
+      this.clearTurnTimeout(); // Player took action, clear timeout
       this.handleClientMove(msg);
     } else if (msg.type === 'event_broadcast') {
       // Client receives event from host - add directly to avoid prompt filtering
@@ -1051,21 +1086,12 @@ let G = {
         E.objects[catIndex].z = newZ;
       }
       
-      // Track movement for combat
-      if (this.combat && this.currentTurn < this.turnOrder.length) {
-        const currentPlayer = this.turnOrder[this.currentTurn];
-        if (currentPlayer.id === playerId && this.actionType === 'move') {
-          this.moveDistance += 5;
-          this.addEvent(`${player.c.n} moved 5ft (${this.moveDistance}/25ft used)`);
-          
-          // Consume action every 25ft
-          if (this.moveDistance >= 25) {
-            this.currentActions--;
-            this.moveDistance = 0;
-            this.addEvent(`Movement action consumed. ${this.currentActions} actions remaining.`);
-            if (this.currentActions <= 0) this.actionType = null;
-          }
-        }
+      // Use client's action count if provided (client manages its own movement economy)
+      if (msg.currentActions !== undefined) {
+        this.currentActions = msg.currentActions;
+      }
+      if (msg.moveDistance !== undefined) {
+        this.moveDistance = msg.moveDistance;
       }
       
       // Sync updated game state
@@ -1167,7 +1193,9 @@ let G = {
     this.send('turn_update', {
       currentTurn: this.currentTurn,
       currentActions: this.currentActions,
-      round: this.combat.round
+      round: this.combat.round,
+      actionType: this.actionType,
+      moveDistance: this.moveDistance
     });
   },
 
@@ -1178,6 +1206,8 @@ let G = {
     this.currentTurn = msg.currentTurn;
     this.currentActions = msg.currentActions;
     if (this.combat) this.combat.round = msg.round;
+    this.actionType = msg.actionType;
+    this.moveDistance = msg.moveDistance || 0;
   },
   
   renderLobby() {
@@ -1346,6 +1376,7 @@ let G = {
     if (!this.combat || this.currentActions <= 0) return;
     if (this.turnOrder[this.currentTurn]?.id !== this.p.id) return;
     
+    this.clearTurnTimeout(); // Player took action, clear timeout
     this.actionType = type;
     this.addEvent(`Selected ${type} action`, true);
     
@@ -1572,7 +1603,15 @@ let G = {
   },
   
   // Next combat turn
+  clearTurnTimeout() {
+    if (this.turnTimeout) {
+      clearTimeout(this.turnTimeout);
+      this.turnTimeout = null;
+    }
+  },
+
   nextTurn() {
+    this.clearTurnTimeout(); // Clear any pending timeout
     // Only host can advance turns
     if (this.gameMode !== 'host') return;
     
@@ -1596,9 +1635,15 @@ let G = {
     // Sync turn state to all players
     this.syncTurnState();
     
-    // AI behavior for NPCs
-    if (currentCat !== this.p && currentCat.v) {
+    // AI behavior for NPCs only (not human clients)
+    if (currentCat.isAI && currentCat.v) {
       setTimeout(() => this.runAITurn(currentCat), 1500);
+    } else if (currentCat.v) {
+      // Human player gets 30 seconds before auto-pass
+      this.turnTimeout = setTimeout(() => {
+        this.addEvent(`${currentCat.c.n}'s turn timed out`);
+        this.nextTurn();
+      }, 30000);
     }
   },
   
@@ -1979,8 +2024,9 @@ let G = {
         const x = startX + i * boxWidth;
         const active = i === this.currentTurn;
         
-        // Box background
-        ctx.fillStyle = active ? 'rgba(255,255,0,0.8)' : 'rgba(0,0,0,0.7)';
+        // Box background - boss gets dark grey, others get black
+        const isBoss = cat.isBoss || cat.id === 'boss';
+        ctx.fillStyle = active ? 'rgba(255,255,0,0.8)' : (isBoss ? 'rgba(64,64,64,0.8)' : 'rgba(0,0,0,0.7)');
         ctx.fillRect(x, startY, boxWidth - 2, boxHeight);
         
         // Border
@@ -2007,20 +2053,34 @@ let G = {
               if (char && char !== '0' && SPRITES.cat.colors[char]) {
                 let color = SPRITES.cat.colors[char];
                 
-                // Apply cat's color tinting
-                if (cat.color !== '#f07010') {
-                  const catR = parseInt(cat.color.slice(1, 3), 16);
-                  const catG = parseInt(cat.color.slice(3, 5), 16);
-                  const catB = parseInt(cat.color.slice(5, 7), 16);
-                  const origR = parseInt(color.slice(1, 3), 16);
-                  const origG = parseInt(color.slice(3, 5), 16);
-                  const origB = parseInt(color.slice(5, 7), 16);
-                  
-                  const tintedR = Math.min(255, Math.floor((origR * catR) / 255));
-                  const tintedG = Math.min(255, Math.floor((origG * catG) / 255));
-                  const tintedB = Math.min(255, Math.floor((origB * catB) / 255));
-                  
-                  color = `#${tintedR.toString(16).padStart(2,'0')}${tintedG.toString(16).padStart(2,'0')}${tintedB.toString(16).padStart(2,'0')}`;
+                // Special handling for boss cat
+                if (cat.isBoss || cat.id === 'boss') {
+                  // Make everything black except specific eye colors
+                  if (color === '#f0a030' || color === '#e09030' || color === '#e06010' || color === '#d06010') {
+                    color = '#ffff00'; // Yellow eyes for boss
+                  } else {
+                    color = '#000000'; // Everything else black
+                  }
+                } else if (cat.color && cat.color !== '#f07010' && cat.color !== null) {
+                  // Simple color replacement based on cat's assigned color
+                  if (color === '#f07010') { // Main orange color
+                    color = cat.color;
+                  } else {
+                    // For other sprite colors, blend with cat color
+                    const catR = parseInt(cat.color.slice(1, 3), 16);
+                    const catG = parseInt(cat.color.slice(3, 5), 16);
+                    const catB = parseInt(cat.color.slice(5, 7), 16);
+                    const origR = parseInt(color.slice(1, 3), 16);
+                    const origG = parseInt(color.slice(3, 5), 16);
+                    const origB = parseInt(color.slice(5, 7), 16);
+                    
+                    // Better blending - use cat color as base, modulate by original
+                    const tintedR = Math.min(255, Math.floor(catR * (origR / 240)));
+                    const tintedG = Math.min(255, Math.floor(catG * (origG / 112)));
+                    const tintedB = Math.min(255, Math.floor(catB * (origB / 16)));
+                    
+                    color = `#${tintedR.toString(16).padStart(2,'0')}${tintedG.toString(16).padStart(2,'0')}${tintedB.toString(16).padStart(2,'0')}`;
+                  }
                 }
                 
                 ctx.fillStyle = color;
@@ -2035,7 +2095,9 @@ let G = {
         
         // Text - use black text for readability on yellow highlight
         ctx.font = '10px monospace';
-        ctx.fillStyle = active ? '#000000' : (cat.color === '#000000' ? '#ffffff' : cat.color); // Black for active, cat color otherwise
+        // Choose readable text color based on background
+        const isDarkBrown = cat.color === '#8B4513' || cat.color === '#CD853F';
+        ctx.fillStyle = active ? '#000000' : (isBoss || isDarkBrown ? '#ffffff' : cat.color);
         ctx.fillText(cat.c.n, x + 40, startY + 15); // Moved further right for bigger sprite
         
         // Regular text color

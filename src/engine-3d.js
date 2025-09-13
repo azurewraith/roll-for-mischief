@@ -445,9 +445,9 @@ const E = {
           } else if (isBoss) {
             // Boss cat is pure black/dark
             color = this.darkenColor(color);
-          } else if (tintColor) {
-            // Apply tint color if provided (only for living cats)
-            color = this.blendColors(color, tintColor);
+          } else if (tintColor && tintColor !== '#f07010' && tintColor !== null) {
+            // Apply strong tint for non-orange cats, no tint for orange or null
+            color = this.strongTint(color, tintColor);
           }
           
           this.ctx.fillStyle = color;
@@ -464,7 +464,42 @@ const E = {
     }
   },
   
-  // Blend original color with tint color
+  // Strong tint - replaces orange pixels with target color, modulates others
+  strongTint(baseColor, tintColor) {
+    // For main orange sprite color, replace entirely
+    if (baseColor === '#f07010') {
+      return tintColor;
+    }
+    
+    // For grey cats, use much stronger tinting to remove orange cast
+    const tint = this.hexToRgb(tintColor);
+    const isGrey = (tint.r === tint.g && tint.g === tint.b) || 
+                   (Math.abs(tint.r - tint.g) < 20 && Math.abs(tint.g - tint.b) < 20);
+    
+    if (isGrey) {
+      // For grey cats, almost completely replace with grey
+      const base = this.hexToRgb(baseColor);
+      const tintStrength = 0.85; // Very strong for greys
+      
+      const r = Math.floor(base.r * (1 - tintStrength) + tint.r * tintStrength);
+      const g = Math.floor(base.g * (1 - tintStrength) + tint.g * tintStrength);
+      const b = Math.floor(base.b * (1 - tintStrength) + tint.b * tintStrength);
+      
+      return `rgb(${r},${g},${b})`;
+    } else {
+      // For other colors, use moderate blend
+      const base = this.hexToRgb(baseColor);
+      const tintStrength = 0.6;
+      
+      const r = Math.floor(base.r * (1 - tintStrength) + tint.r * tintStrength);
+      const g = Math.floor(base.g * (1 - tintStrength) + tint.g * tintStrength);
+      const b = Math.floor(base.b * (1 - tintStrength) + tint.b * tintStrength);
+      
+      return `rgb(${r},${g},${b})`;
+    }
+  },
+
+  // Blend original color with tint color  
   blendColors(baseColor, tintColor) {
     // Moderate tint blend - mix 60% original + 40% tint
     const base = this.hexToRgb(baseColor);
